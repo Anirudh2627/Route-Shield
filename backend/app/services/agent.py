@@ -44,12 +44,19 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from .. import models
 from ..config import get_settings
-from ..schemas import AgentFinalAssessment
+from ..schemas import (
+    AgentFact,
+    AgentFinalAssessment,
+    AgentInference,
+    AgentRecommendation,
+    AgentRecoveryCandidate,
+)
 from . import agent_tools
 
 logger = logging.getLogger("routeshield.agent")
@@ -81,6 +88,124 @@ _REF_PATTERNS = (
     re.compile(r"^PROP-[A-Z0-9-]+$"),
     re.compile(r"^R-\d+$"),
 )
+
+# ---------------------------------------------------------------------------
+# Schema-aware recovery (deterministic, recorded, never bypasses validation)
+# ---------------------------------------------------------------------------
+
+# JSON-Schema echo keys that models sometimes copy into their answer body.
+# They are metadata noise, never assessment content.
+_SCHEMA_NOISE_KEYS = frozenset({"$defs", "$schema", "definitions", "$id", "$comment"})
+
+
+def _schema_maxlen(model, field_name: str) -> int | None:
+    """max_length constraint of a str field, read from the pydantic model."""
+    info = model.model_fields.get(field_name)
+    if info is None:
+        return None
+    for meta in info.metadata:
+        max_len = getattr(meta, "max_length", None)
+        if max_len:
+            return int(max_len)
+    return None
+
+
+# Top-level FREE-TEXT fields that may be deterministically truncated when
+# oversized. Evidence-bearing id/ref fields are NEVER repaired: a truncated
+# id would be a corrupted id, and schema + grounding validation must reject
+# those instead. Fixed Literal[True] approval flags are likewise never touched.
+_REPAIR_TOP_TEXT = ("incident_summary", "objective_interpretation", "uncertainty_notes")
+
+# Nested model fields (list[<model>]) whose free-text members may be truncated.
+_REPAIR_NESTED_TEXT = {
+    "facts": (AgentFact, ("statement",)),
+    "inferences": (AgentInference, ("statement", "basis")),
+    "proposed_next_actions": (AgentRecommendation, ("action", "rationale")),
+    "recovery_candidates": (AgentRecoveryCandidate, ("feasibility_note",)),
+}
+
+# Concrete limit tables, derived once from the live schema so they cannot
+# drift from schemas.py.
+_REPAIR_TOP_LIMITS = {f: _schema_maxlen(AgentFinalAssessment, f) for f in _REPAIR_TOP_TEXT}
+_REPAIR_NESTED_LIMITS = {
+    list_field: (model, {f: _schema_maxlen(model, f) for f in fields})
+    for list_field, (model, fields) in _REPAIR_NESTED_TEXT.items()
+}
+
+
+def _repair_final_payload(payload: dict) -> tuple[dict, list[str]]:
+    """Deterministic pre-validation canonicalization of a final answer.
+
+    Safe repairs ONLY, each one recorded by the caller in the trace:
+    * drop JSON-Schema echo keys ($defs and friends);
+    * truncate oversized FREE-TEXT strings to the schema max_length.
+
+    A repair only ever REMOVES or SHORTENS content - it can never create a
+    claim, an id, or an approval. The repaired payload must still pass the
+    full schema validation AND the deterministic grounding validator, so a
+    repair can never make an ungrounded or unsafe answer acceptable. This
+    runs before validation (canonicalization), not instead of it.
+    """
+    repairs: list[str] = []
+    cleaned: dict = {}
+    for key, value in payload.items():
+        if key in _SCHEMA_NOISE_KEYS:
+            repairs.append(f"dropped non-assessment field '{key}' (JSON-Schema echo)")
+        else:
+            cleaned[key] = value
+    for field_name, limit in _REPAIR_TOP_LIMITS.items():
+        value = cleaned.get(field_name)
+        if limit and isinstance(value, str) and len(value) > limit:
+            cleaned[field_name] = value[:limit]
+            repairs.append(
+                f"{field_name} truncated from {len(value)} to {limit} chars (schema max_length)"
+            )
+    for list_field, (model, fields) in _REPAIR_NESTED_LIMITS.items():
+        items = cleaned.get(list_field)
+        if not isinstance(items, list):
+            continue
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            for text_field, limit in fields.items():
+                value = item.get(text_field)
+                if limit and isinstance(value, str) and len(value) > limit:
+                    item[text_field] = value[:limit]
+                    repairs.append(
+                        f"{list_field}[{i}].{text_field} truncated from {len(value)} to "
+                        f"{limit} chars (schema max_length)"
+                    )
+    return cleaned, repairs
+
+
+def _format_schema_error(exc: ValidationError, repairs: list[str]) -> str:
+    """Model-actionable, deterministic description of every schema error.
+
+    One clause per error with the exact field path and the fix, so a bounded
+    retry can actually correct the payload (unlike a raw exception dump).
+    """
+    errors = exc.errors()
+    parts: list[str] = []
+    for e in errors[:20]:
+        loc = ".".join(str(p) for p in e.get("loc", ())) or "<payload>"
+        etype = e.get("type", "")
+        msg = e.get("msg", "invalid value")
+        if etype == "extra_forbidden":
+            parts.append(f"{loc}: unexpected field, not part of the assessment schema - remove it")
+        elif etype == "string_too_long":
+            parts.append(f"{loc}: {msg} - shorten this field")
+        elif etype == "missing":
+            parts.append(f"{loc}: required field is missing - add it")
+        elif etype == "literal_error":
+            parts.append(f"{loc}: {msg} - this value is fixed by the schema and must not be changed")
+        else:
+            parts.append(f"{loc}: {msg}")
+    if len(errors) > 20:
+        parts.append(f"... and {len(errors) - 20} more errors")
+    text = "final assessment failed schema validation: " + "; ".join(parts)
+    if repairs:
+        text += " [deterministic repairs applied before validation: " + "; ".join(repairs) + "]"
+    return text
 
 
 def sanitize_error(exc: Exception) -> str:
@@ -387,6 +512,13 @@ def validate_grounding(final: AgentFinalAssessment, index: RefIndex) -> list[str
                 f"'{claim.asset_id}' contradicts the deterministic engine value "
                 f"'{index.classifications[claim.asset_id]}'"
             )
+        # basis_ref is an evidence id: it must resolve to something a tool
+        # actually returned, never an invented id (checked only when cited).
+        if claim.basis_ref and claim.basis_ref not in index.refs:
+            violations.append(
+                f"vehicle_classifications[{i}]: basis_ref '{claim.basis_ref}' was never "
+                "returned by a tool"
+            )
 
     for i, route_id in enumerate(final.affected_routes):
         if route_id not in index.routes:
@@ -678,15 +810,24 @@ class InvestigationRunner:
 
     # -- final-answer handling ------------------------------------------------
 
-    def _accept_final(self, raw: str) -> tuple[AgentFinalAssessment | None, str]:
+    def _accept_final(self, raw: str) -> tuple[AgentFinalAssessment | None, str, list[str]]:
+        """Parse, deterministically repair, then schema-validate a final answer.
+
+        Returns (assessment, error, repairs). Exactly one of assessment/error
+        is None; repairs lists every deterministic pre-validation edit (it is
+        empty or non-empty independently of the outcome and is persisted by
+        the caller either way). A failed response is never accepted: the
+        repaired payload must still pass the full schema here and the
+        grounding validator in the caller.
+        """
         obj, err = _extract_json_object(raw)
         if obj is None:
-            return None, f"final answer {err}"
+            return None, f"final answer {err}", []
         if obj.get("action") == "tool":
             return None, (
                 "final answer used the tool action; to call tools reply with tool calls, and "
                 "when done emit the final assessment object"
-            )
+            ), []
         if obj.get("action") == "final":
             nested = obj.get("assessment")
             if isinstance(nested, dict):
@@ -696,11 +837,18 @@ class InvestigationRunner:
         else:
             payload = obj  # bare assessment object (native protocol contract)
         if not isinstance(payload, dict):
-            return None, "final answer must be the assessment JSON object"
+            return None, "final answer must be the assessment JSON object", []
+        payload, repairs = _repair_final_payload(payload)
         try:
-            return AgentFinalAssessment.model_validate(payload), ""
-        except Exception as exc:  # pydantic ValidationError
-            return None, f"final assessment failed schema validation: {sanitize_error(exc)}"
+            return AgentFinalAssessment.model_validate(payload), "", repairs
+        except ValidationError as exc:
+            return None, _format_schema_error(exc, repairs), repairs
+        except Exception as exc:  # noqa: BLE001 - pydantic edge cases
+            return (
+                None,
+                f"final assessment failed schema validation: {sanitize_error(exc)}",
+                repairs,
+            )
 
     # -- main loop ---------------------------------------------------------
 
@@ -824,13 +972,32 @@ class InvestigationRunner:
             content = turn.content
             if not content.strip() and turn.protocol == "json":
                 content = ""
-            assessment, err = self._accept_final(content)
+            t_val = time.monotonic()
+            assessment, err, repairs = self._accept_final(content)
+            val_ms = int((time.monotonic() - t_val) * 1000)
+            if repairs:
+                # Observability: every deterministic repair is persisted, even
+                # when the assessment is ultimately accepted.
+                seq += 1
+                self._step(
+                    session, seq, "VALIDATION", status="SCHEMA_REPAIR",
+                    explanation="deterministic pre-validation repairs applied to the final answer",
+                    result={"repairs": repairs, "model_round": iteration},
+                    duration_ms=val_ms,
+                )
             if assessment is None:
                 invalid_final_retries += 1
                 seq += 1
                 self._step(
                     session, seq, "VALIDATION", status=STOP_INVALID_FINAL,
                     explanation=err[:2000],
+                    result={
+                        "attempt": invalid_final_retries,
+                        "max_retries": MAX_FINAL_RETRIES,
+                        "model_round": iteration,
+                        "repairs": repairs,
+                    },
+                    duration_ms=val_ms,
                 )
                 if invalid_final_retries >= MAX_FINAL_RETRIES:
                     stop_reason = STOP_INVALID_FINAL
@@ -843,23 +1010,45 @@ class InvestigationRunner:
                 )
                 continue
 
+            t_val = time.monotonic()
             violations = validate_grounding(assessment, self.index)
+            val_ms = int((time.monotonic() - t_val) * 1000)
             if violations:
                 grounding_retries += 1
                 seq += 1
                 self._step(
                     session, seq, "VALIDATION", status=STOP_GROUNDING_FAILED,
                     explanation="grounding validator rejected the final assessment",
-                    result={"violations": violations},
+                    result={
+                        "violations": violations,
+                        "attempt": grounding_retries,
+                        "max_retries": MAX_FINAL_RETRIES,
+                        "model_round": iteration,
+                    },
+                    duration_ms=val_ms,
                 )
                 if grounding_retries >= MAX_FINAL_RETRIES:
                     stop_reason = STOP_GROUNDING_FAILED
                     break
+                # Actionable hint: show the model which canonical ids tools
+                # actually returned so the bounded retry can cite real ones.
+                unknown_ref_violations = [
+                    v for v in violations
+                    if "was never returned by a tool" in v or "never appeared" in v
+                ]
+                hint = ""
+                if unknown_ref_violations:
+                    sample = sorted(self.index.refs)[:10]
+                    hint = (
+                        "\nCanonical ids actually observed from tool outputs this session "
+                        "(sample): " + (", ".join(sample) if sample else "(none)")
+                    )
                 conversation.assistant(content[:2000])
                 conversation.user(
                     "Your final assessment was REJECTED by the deterministic grounding validator. "
                     "Ungrounded claims are never shown to users. Violations:\n- "
                     + "\n- ".join(violations)
+                    + hint
                     + "\nRe-emit the final assessment citing ONLY reference ids that tools "
                     "actually returned, using classifications exactly as the engine produced "
                     "them. Call tools again if you need to verify."
@@ -871,7 +1060,11 @@ class InvestigationRunner:
             seq += 1
             self._step(
                 session, seq, "FINAL", status="OK",
-                explanation="final assessment accepted by schema + grounding validation",
+                explanation=(
+                    "final assessment accepted by schema + grounding validation"
+                    + (f" after {len(repairs)} deterministic repair(s)" if repairs else "")
+                ),
+                duration_ms=val_ms,
             )
             final_result = assessment.model_dump()
             stop_reason = STOP_MODEL_STOPPED
