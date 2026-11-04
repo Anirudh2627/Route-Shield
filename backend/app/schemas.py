@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Classification / policy vocabularies (single source of truth)
@@ -442,3 +442,139 @@ class RefreshResult(BaseModel):
     incident_id: int
     evidence: EvidenceOut
     message: str
+
+
+# ---------------------------------------------------------------------------
+# Incident Response Agent - strict structured final output + API contracts
+#
+# The agent's final assessment is validated TWICE:
+#   1. Pydantic (this schema; extra fields forbidden => invalid JSON rejected)
+#   2. Deterministic grounding (services/agent.py): every vehicle, route,
+#      classification and evidence reference in the output must have been
+#      observed in a real read-only tool result. Ungrounded claims are fed
+#      back to the model or fail the investigation - they are never shown
+#      as facts.
+# ---------------------------------------------------------------------------
+
+CLASSIFICATION_VALUES = ("CAMPAIGN_CRITERIA_MATCH", "VERIFICATION_REQUIRED", "OUTSIDE_REPORT_VERSION")
+
+
+class AgentEvidenceRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ref_id: str = Field(min_length=1, max_length=128,
+                        description="Reference id exactly as returned by a tool (e.g. CRIT-12, ASSESS-3, DOC-<sha16>).")
+    description: str = Field(default="", max_length=512)
+    source: str = Field(default="", max_length=1024)
+
+
+class AgentFact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    statement: str = Field(min_length=1, max_length=1000)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=20)
+
+
+class AgentInference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    statement: str = Field(min_length=1, max_length=1000)
+    basis: str = Field(default="", max_length=1000)
+
+
+class AgentRecommendation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str = Field(min_length=1, max_length=1000)
+    rationale: str = Field(default="", max_length=1000)
+    requires_human_approval: Literal[True] = True
+
+
+class AgentClassificationClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    asset_id: str = Field(min_length=1, max_length=64)
+    classification: Classification
+    basis_ref: str = Field(default="", max_length=128)
+
+
+class AgentRecoveryCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    route_id: str = Field(min_length=1, max_length=64)
+    spare_asset_id: Optional[str] = Field(default=None, max_length=64)
+    feasibility_note: str = Field(default="", max_length=500)
+
+
+class AgentFinalAssessment(BaseModel):
+    """Strict schema for the agent's final structured investigation output."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    incident_summary: str = Field(min_length=1, max_length=2000)
+    objective_interpretation: str = Field(min_length=1, max_length=1000)
+    facts: list[AgentFact] = Field(default_factory=list, max_length=40)
+    inferences: list[AgentInference] = Field(default_factory=list, max_length=40)
+    vehicle_classifications: list[AgentClassificationClaim] = Field(default_factory=list, max_length=100)
+    affected_routes: list[str] = Field(default_factory=list, max_length=100)
+    recovery_candidates: list[AgentRecoveryCandidate] = Field(default_factory=list, max_length=100)
+    unresolved_constraints: list[str] = Field(default_factory=list, max_length=40)
+    unknowns_and_missing_evidence: list[str] = Field(default_factory=list, max_length=40)
+    proposed_next_actions: list[AgentRecommendation] = Field(default_factory=list, max_length=20)
+    uncertainty_notes: str = Field(default="", max_length=2000)
+    evidence_references: list[AgentEvidenceRef] = Field(default_factory=list, max_length=60)
+    human_approval_required: Literal[True] = True
+
+
+class StartInvestigationRequest(BaseModel):
+    incident_id: int = Field(ge=1)
+    objective: str = Field(min_length=4, max_length=2000)
+
+
+class InvestigationStepOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    seq: int
+    kind: str
+    tool_name: str
+    tool_args: Optional[dict] = None
+    status: str
+    explanation: str
+    result: Optional[dict] = None
+    duration_ms: int
+    created_at: datetime
+
+
+class InvestigationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    session_uid: str
+    incident_id: int
+    objective: str
+    requested_by: str
+    status: str
+    stop_reason: str
+    model: str
+    iterations_used: int
+    tool_calls_count: int
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    duration_ms: Optional[int] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    provider_error: str
+    final_result: Optional[dict] = None
+    grounding_violations: list = Field(default_factory=list)
+    steps: list[InvestigationStepOut] = Field(default_factory=list)
+
+
+class AgentStatusOut(BaseModel):
+    configured: bool
+    model: str
+    base_url_host: str
+    max_iterations: int
+    tools: list[str]
+    write_tools_exposed: Literal[False] = False
+    note: str
+
+
+class AgentProbeOut(BaseModel):
+    configured: bool
+    tool_calling_supported: Optional[bool] = None
+    model: str = ""
+    detail: str = ""
+    duration_ms: int = 0

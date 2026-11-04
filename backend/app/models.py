@@ -406,3 +406,75 @@ class ManagerUser(Base):
     display_name: Mapped[str] = mapped_column(String(255), default="")
     role: Mapped[str] = mapped_column(String(32), default="FLEET_MANAGER")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# ---------------------------------------------------------------------------
+# AI incident-response agent (investigations are READ-ONLY; the agent never
+# writes operational state - the approval endpoint remains the only writer)
+# ---------------------------------------------------------------------------
+
+
+class InvestigationSession(Base):
+    """One bounded agent investigation: objective in, grounded assessment out.
+
+    Statuses: INVESTIGATING | COMPLETED | FAILED. The full tool trace lives in
+    InvestigationStep rows, persisted incrementally so the UI can follow live.
+    """
+
+    __tablename__ = "investigation_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_uid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    incident_id: Mapped[int] = mapped_column(ForeignKey("incidents.id"), index=True)
+    objective: Mapped[str] = mapped_column(Text)
+    requested_by: Mapped[str] = mapped_column(String(128), default="")
+    # INVESTIGATING | COMPLETED | FAILED
+    status: Mapped[str] = mapped_column(String(32), default="INVESTIGATING", index=True)
+    # MODEL_STOPPED | MAX_ITERATIONS | PROVIDER_ERROR | MODEL_NOT_CONFIGURED |
+    # INVALID_FINAL_OUTPUT | GROUNDING_VALIDATION_FAILED | TIME_BUDGET_EXCEEDED
+    stop_reason: Mapped[str] = mapped_column(String(48), default="")
+    model: Mapped[str] = mapped_column(String(128), default="")
+    iterations_used: Mapped[int] = mapped_column(Integer, default=0)
+    tool_calls_count: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Sanitized provider diagnostics (never contains credentials)
+    provider_error: Mapped[str] = mapped_column(Text, default="")
+    # Validated structured final assessment (AgentFinalAssessment dump)
+    final_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    grounding_violations: Mapped[list] = mapped_column(JSON, default=list)
+
+    incident: Mapped[Incident] = relationship()
+    steps: Mapped[list[InvestigationStep]] = relationship(
+        back_populates="session", cascade="all, delete-orphan", order_by="InvestigationStep.seq"
+    )
+
+
+class InvestigationStep(Base):
+    """One step of the agent trace: model narration, tool call, tool result,
+    validation outcome or terminal error. Append-only while investigating."""
+
+    __tablename__ = "investigation_steps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("investigation_sessions.id"), index=True
+    )
+    seq: Mapped[int] = mapped_column(Integer, default=0)
+    # MODEL_MESSAGE | TOOL_CALL | VALIDATION | FINAL | ERROR
+    kind: Mapped[str] = mapped_column(String(32))
+    tool_name: Mapped[str] = mapped_column(String(64), default="")
+    tool_args: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # OK | INVALID_TOOL_CALL | INVALID_ARGS | TOOL_ERROR | PROVIDER_ERROR | TIMEOUT
+    status: Mapped[str] = mapped_column(String(32), default="")
+    # Model's one-sentence rationale for the action (not hidden chain-of-thought)
+    explanation: Mapped[str] = mapped_column(Text, default="")
+    # Structured tool result (capped) or error/validation detail
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    session: Mapped[InvestigationSession] = relationship(back_populates="steps")

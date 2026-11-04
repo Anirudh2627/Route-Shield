@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     vultr_inference_model: str = ""
     llm_enabled: bool = True
 
+    # --- Incident Response Agent (bounded, read-only tool-calling loop) --------
+    # The agent may ONLY call tools from the explicit read-only registry in
+    # services/agent_tools.py. It never writes operational state.
+    agent_max_iterations: int = 8          # hard cap on tool-calling rounds
+    agent_llm_timeout_seconds: float = 60.0  # per model call
+    agent_total_budget_seconds: float = 300.0  # wall-clock cap per investigation
+
     # --- Frontend -------------------------------------------------------------
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     serve_frontend_dir: str = ""  # optional: path to built frontend dist/
