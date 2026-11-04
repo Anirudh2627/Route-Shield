@@ -1,0 +1,519 @@
+{
+  "run_at": "2026-11-03T19:11:46.390596+00:00",
+  "engine_version": "1.1.0",
+  "campaign_number": "26V111",
+  "sample_count": 40,
+  "duration_ms": 1,
+  "metrics": {
+    "correct_match_rate": 1.0,
+    "correct_match_count": "11/11",
+    "correct_abstention_rate": 1.0,
+    "correct_abstention_count": "12/12",
+    "false_confirmation_rate": 0.0,
+    "false_confirmation_count": "0/12",
+    "outside_accuracy": 1.0,
+    "outside_count": "17/17",
+    "overall_accuracy": 1.0,
+    "overall_count": "40/40"
+  },
+  "confusion_matrix": {
+    "CAMPAIGN_CRITERIA_MATCH": {
+      "CAMPAIGN_CRITERIA_MATCH": 11,
+      "VERIFICATION_REQUIRED": 0,
+      "OUTSIDE_REPORT_VERSION": 0
+    },
+    "VERIFICATION_REQUIRED": {
+      "CAMPAIGN_CRITERIA_MATCH": 0,
+      "VERIFICATION_REQUIRED": 12,
+      "OUTSIDE_REPORT_VERSION": 0
+    },
+    "OUTSIDE_REPORT_VERSION": {
+      "CAMPAIGN_CRITERIA_MATCH": 0,
+      "VERIFICATION_REQUIRED": 0,
+      "OUTSIDE_REPORT_VERSION": 17
+    }
+  },
+  "cases": [
+    {
+      "asset_id": "BM-001",
+      "category": "complete_match",
+      "expected": "CAMPAIGN_CRITERIA_MATCH",
+      "predicted": "CAMPAIGN_CRITERIA_MATCH",
+      "correct": true,
+      "note": "MY2023 window start boundary (Dec 15, 2022)",
+      "reasons": [
+        "Campaign criteria match: make / model, model year, production date range, brake configuration feature code satisfy the reviewed campaign criteria.",
+        "CAMPAIGN_CRITERIA_MATCH is a match against the reviewed campaign criteria only. It is NOT a VIN-level confirmation that this individual vehicle has an open recall."
+      ]
+    },
+    {
+      "asset_id": "BM-002",
+      "category": "complete_match",
+      "expected": "CAMPAIGN_CRITERIA_MATCH",
+      "predicted": "CAMPAIGN_CRITERIA_MATCH",
+      "correct": true,
+      "note": "MY2023 window end boundary (Dec 20, 2022)",
+      "reasons": [
+        "Campaign criteria match: make / model, model year, production date range, brake configuration feature code satisfy the reviewed campaign criteria.",
+        "CAMPAIGN_CRITERIA_MATCH is a match against the reviewed campaign criteria only. It is NOT a VIN-level confirmation that this individual vehicle has an open recall."
+      ]
+    },
+    {
+      "asset_id": "BM-003",
+      "category": "complete_match",
+      "expected": "CAMPAIGN_CRITERIA_MATCH",
+      "predicted": "CAMPAIGN_CRITERIA_MATCH",
+      "correct": true,
+      "note": "MY2024 window start boundary",
+      "reasons": [
+        "Campaign criteria match: make / model, model year, production date range, brake configuration feature code satisfy the reviewed campaign criteria.",
+        "CAMPAIGN_CRITERIA_MATCH is a match against the reviewed campaign criteria only. It is NOT a VIN-level confirmation that this individual vehicle has an open recall."
+      ]
+    },
+    {
+      "asset_id": "BM-004",
+      "category": "complete_match",
+      "expected": "CAMPAIGN_CRITERIA_MATCH",
+      "predicted": "CAMPAIGN_CRITERIA_MATCH",
+      "correct": true,
+      "note": "MY2024 window end boundary",
+      "reasons": [
+        "Campaign criteria match: make / model, model year, production date range, brake configuration feature code satisfy the reviewed campaign criteria.",
+        "CAMPAIGN_CRITERIA_MATCH is a match against the reviewed campaign criteria only. It is NOT a VIN-level confirmation that this individual vehicle has an open recall."
+      ]
+    },
+    {
+      "asset_id": "BM-005",
+      "category": "complete_match",
+      "expected": "CAMPAIGN_CRITERIA_MATCH",
+      "predicted": "CAMPAIGN_CRITERIA_MATCH",
+      "correct": true,
+      "note": "MY2025 window start boundary",
+      "reasons": [
+        "Campaign criteria match: make / model, model year, production date range, brake configuration feature code satisfy the reviewed campaign criteria.",
+        "CAMPAIGN_CRITERIA_MATCH is a match against the reviewed campaign criteria only. It is NOT a VIN-level confirmation that this individual vehicle has an open recall."
+      ]
+    },
+    {
+      "asset_id": "BM-006",
+      "category": "complete_match",
+      "expected": "CAMPAIGN_CRITERIA_MATCH",
+      "predicted": "CAMPAIGN_CRITERIA_MATCH",
+      "correct": true,
+      "note": "MY2025 mid-window",
+      "reasons": [
+        "Campaign criteria match: make / model, model year, production date range, brake configuration feature code satisfy the reviewed campaign criteria.",
+        "CAMPAIGN_CRITERIA_MATCH is a match against the reviewed campaign criteria only. It is NOT a VIN-level confirmation that this individual vehicle has an open recall."
+      ]
+    },
+    {
+      "asset_id": "BM-007",
+      "category": "complete_match",
+      "expected": "CAMPAIGN_CRITERIA_MATCH",
+      "predicted": "CAMPAIGN_CRITERIA_MATCH",
+      "correct": true,
+      "note": "MY2026 window start boundary",
+      "reasons": [
+        "Campaign criteria match: make / model, model year, production date range, brake configuration feature code satisfy the reviewed campaign criteria.",
+        "CAMPAIGN_CRITERIA_MATCH is a match against the reviewed campaign criteria only. It is NOT a VIN-level confirmation that this individual vehicle has an open recall."
+      ]
+    },
+    {
+      "asset_id": "BM-008",
+      "category": "complete_match",
+      "expected": "CAMPAIGN_CRITERIA_MATCH",
+      "predicted": "CAMPAIGN_CRITERIA_MATCH",
+      "correct": true,
+      "note": "MY2026 mid-window",
+      "reasons": [
+        "Campaign criteria match: make / model, model year, production date range, brake configuration feature code satisfy the reviewed campaign criteria.",
+        "CAMPAIGN_CRITERIA_MATCH is a match against the reviewed campaign criteria only. It is NOT a VIN-level confirmation that this individual vehicle has an open recall."
+      ]
+    },
+    {
+      "asset_id": "BM-009",
+      "category": "complete_match",
+      "expected": "CAMPAIGN_CRITERIA_MATCH",
+      "predicted": "CAMPAIGN_CRITERIA_MATCH",
+      "correct": true,
+      "note": "MY2027 window start boundary",
+      "reasons": [
+        "Campaign criteria match: make / model, model year, production date range, brake configuration feature code satisfy the reviewed campaign criteria.",
+        "CAMPAIGN_CRITERIA_MATCH is a match against the reviewed campaign criteria only. It is NOT a VIN-level confirmation that this individual vehicle has an open recall."
+      ]
+    },
+    {
+      "asset_id": "BM-010",
+      "category": "complete_match",
+      "expected": "CAMPAIGN_CRITERIA_MATCH",
+      "predicted": "CAMPAIGN_CRITERIA_MATCH",
+      "correct": true,
+      "note": "MY2027 window end boundary (Feb 02, 2026)",
+      "reasons": [
+        "Campaign criteria match: make / model, model year, production date range, brake configuration feature code satisfy the reviewed campaign criteria.",
+        "CAMPAIGN_CRITERIA_MATCH is a match against the reviewed campaign criteria only. It is NOT a VIN-level confirmation that this individual vehicle has an open recall."
+      ]
+    },
+    {
+      "asset_id": "BM-011",
+      "category": "incomplete_evidence",
+      "expected": "VERIFICATION_REQUIRED",
+      "predicted": "VERIFICATION_REQUIRED",
+      "correct": true,
+      "note": "Build date missing",
+      "reasons": [
+        "Verification required: manufacturing date unavailable. The reviewed criteria depend on the production date range and it cannot be checked.",
+        "Absence of evidence is not evidence of safety: the system abstains from concluding that this vehicle is unaffected while critical evidence is missing or ambiguous."
+      ]
+    },
+    {
+      "asset_id": "BM-012",
+      "category": "incomplete_evidence",
+      "expected": "VERIFICATION_REQUIRED",
+      "predicted": "VERIFICATION_REQUIRED",
+      "correct": true,
+      "note": "Brake feature code missing",
+      "reasons": [
+        "Verification required: brake configuration feature code is not recorded. The reviewed criteria require Hydraulic Brake (feature code 0004100) and no evidence supports or refutes it.",
+        "Absence of evidence is not evidence of safety: the system abstains from concluding that this vehicle is unaffected while critical evidence is missing or ambiguous."
+      ]
+    },
+    {
+      "asset_id": "BM-013",
+      "category": "incomplete_evidence",
+      "expected": "VERIFICATION_REQUIRED",
+      "predicted": "VERIFICATION_REQUIRED",
+      "correct": true,
+      "note": "Both build date and feature code missing",
+      "reasons": [
+        "Verification required: manufacturing date unavailable. The reviewed criteria depend on the production date range and it cannot be checked.",
+        "Verification required: brake configuration feature code is not recorded. The reviewed criteria require Hydraulic Brake (feature code 0004100) and no evidence supports or refutes it."
+      ]
+    },
+    {
+      "asset_id": "BM-014",
+      "category": "incomplete_evidence",
+      "expected": "VERIFICATION_REQUIRED",
+      "predicted": "VERIFICATION_REQUIRED",
+      "correct": true,
+      "note": "Model year missing",
+      "reasons": [
+        "Verification required: model year is not recorded for this vehicle.",
+        "Absence of evidence is not evidence of safety: the system abstains from concluding that this vehicle is unaffected while critical evidence is missing or ambiguous."
+      ]
+    },
+    {
+      "asset_id": "BM-015",
+      "category": "incomplete_evidence",
+      "expected": "VERIFICATION_REQUIRED",
+      "predicted": "VERIFICATION_REQUIRED",
+      "correct": true,
+      "note": "Make and model missing (build date inside the MY2025 window)",
+      "reasons": [
+        "Verification required: make and model are not recorded for this vehicle.",
+        "Absence of evidence is not evidence of safety: the system abstains from concluding that this vehicle is unaffected while critical evidence is missing or ambiguous."
+      ]
+    },
+    {
+      "asset_id": "BM-016",
+      "category": "incomplete_evidence",
+      "expected": "VERIFICATION_REQUIRED",
+      "predicted": "VERIFICATION_REQUIRED",
+      "correct": true,
+      "note": "Narrative mentions hydraulic but code not machine-recorded",
+      "reasons": [
+        "Verification required: brake feature code is not machine-recorded. Configuration notes mention 'Hydraulic Brake' but the reviewed criterion is the feature code (0004100, p.1); narrative text alone is not sufficient evidence.",
+        "Absence of evidence is not evidence of safety: the system abstains from concluding that this vehicle is unaffected while critical evidence is missing or ambiguous."
+      ]
+    },
+    {
+      "asset_id": "BM-017",
+      "category": "incomplete_evidence",
+      "expected": "VERIFICATION_REQUIRED",
+      "predicted": "VERIFICATION_REQUIRED",
+      "correct": true,
+      "note": "Configuration explicitly 'not recorded'",
+      "reasons": [
+        "Verification required: brake configuration feature code is not recorded. The reviewed criteria require Hydraulic Brake (feature code 0004100) and no evidence supports or refutes it.",
+        "Absence of evidence is not evidence of safety: the system abstains from concluding that this vehicle is unaffected while critical evidence is missing or ambiguous."
+      ]
+    },
+    {
+      "asset_id": "BM-018",
+      "category": "incomplete_evidence",
+      "expected": "VERIFICATION_REQUIRED",
+      "predicted": "VERIFICATION_REQUIRED",
+      "correct": true,
+      "note": "Empty-string feature code",
+      "reasons": [
+        "Verification required: brake configuration feature code is not recorded. The reviewed criteria require Hydraulic Brake (feature code 0004100) and no evidence supports or refutes it.",
+        "Absence of evidence is not evidence of safety: the system abstains from concluding that this vehicle is unaffected while critical evidence is missing or ambiguous."
+      ]
+    },
+    {
+      "asset_id": "BM-019",
+      "category": "incomplete_evidence",
+      "expected": "VERIFICATION_REQUIRED",
+      "predicted": "VERIFICATION_REQUIRED",
+      "correct": true,
+      "note": "No build date, no code, no config",
+      "reasons": [
+        "Verification required: manufacturing date unavailable. The reviewed criteria depend on the production date range and it cannot be checked.",
+        "Verification required: brake configuration feature code is not recorded. The reviewed criteria require Hydraulic Brake (feature code 0004100) and no evidence supports or refutes it."
+      ]
+    },
+    {
+      "asset_id": "BM-020",
+      "category": "conflicting_attributes",
+      "expected": "VERIFICATION_REQUIRED",
+      "predicted": "VERIFICATION_REQUIRED",
+      "correct": true,
+      "note": "Code matches but configuration narrative contradicts it",
+      "reasons": [
+        "Verification required: conflicting configuration evidence. Recorded feature code 0004100 matches Hydraulic Brake (feature code 0004100), but configuration notes mention 'air brake'. Conflicting records must be resolved by a human before this vehicle can be classified either way.",
+        "Absence of evidence is not evidence of safety: the system abstains from concluding that this vehicle is unaffected while critical evidence is missing or ambiguous."
+      ]
+    },
+    {
+      "asset_id": "BM-021",
+      "category": "incomplete_evidence",
+      "expected": "VERIFICATION_REQUIRED",
+      "predicted": "VERIFICATION_REQUIRED",
+      "correct": true,
+      "note": "Config names hydraulic system but authoritative code is illegible",
+      "reasons": [
+        "Verification required: brake configuration feature code is not recorded. The reviewed criteria require Hydraulic Brake (feature code 0004100) and no evidence supports or refutes it.",
+        "Absence of evidence is not evidence of safety: the system abstains from concluding that this vehicle is unaffected while critical evidence is missing or ambiguous."
+      ]
+    },
+    {
+      "asset_id": "BM-022",
+      "category": "incomplete_evidence",
+      "expected": "VERIFICATION_REQUIRED",
+      "predicted": "VERIFICATION_REQUIRED",
+      "correct": true,
+      "note": "Code missing while every other criterion matches",
+      "reasons": [
+        "Verification required: brake configuration feature code is not recorded. The reviewed criteria require Hydraulic Brake (feature code 0004100) and no evidence supports or refutes it.",
+        "Absence of evidence is not evidence of safety: the system abstains from concluding that this vehicle is unaffected while critical evidence is missing or ambiguous."
+      ]
+    },
+    {
+      "asset_id": "BM-023",
+      "category": "out_of_range",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "One day before MY2023 window start",
+      "reasons": [
+        "Outside this report version: production date precedes the documented affected production period for MY2023 (MY2023: 2022-12-15 to 2022-12-20, p.2).",
+        "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
+      ]
+    },
+    {
+      "asset_id": "BM-024",
+      "category": "out_of_range",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "One day after MY2023 window end",
+      "reasons": [
+        "Outside this report version: production date follows the documented affected production period for MY2023 (MY2023: 2022-12-15 to 2022-12-20, p.2).",
+        "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
+      ]
+    },
+    {
+      "asset_id": "BM-025",
+      "category": "out_of_range",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "One day before MY2024 window start",
+      "reasons": [
+        "Outside this report version: production date precedes the documented affected production period for MY2024 (MY2024: 2023-09-21 to 2023-10-25, p.2).",
+        "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
+      ]
+    },
+    {
+      "asset_id": "BM-026",
+      "category": "out_of_range",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "One day after MY2025 window end (and outside MY2025 list)",
+      "reasons": [
+        "Outside this report version: production date follows the documented affected production period for MY2025 (MY2025: 2024-02-05 to 2024-10-02, p.1).",
+        "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
+      ]
+    },
+    {
+      "asset_id": "BM-027",
+      "category": "out_of_range",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "Inside overall suspect window but outside the MY2024 documented window",
+      "reasons": [
+        "Outside this report version: production date follows the documented affected production period for MY2024 (MY2024: 2023-09-21 to 2023-10-25, p.2).",
+        "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
+      ]
+    },
+    {
+      "asset_id": "BM-028",
+      "category": "out_of_range",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "Gap day between MY2026 end and MY2027 start",
+      "reasons": [
+        "Outside this report version: production date follows the documented affected production period for MY2026 (MY2026: 2024-10-02 to 2025-10-07, p.2).",
+        "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
+      ]
+    },
+    {
+      "asset_id": "BM-029",
+      "category": "out_of_range",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "One day after the final documented build date",
+      "reasons": [
+        "Outside this report version: production date follows the documented affected production period for MY2027 (MY2027: 2025-10-09 to 2026-02-02, p.1).",
+        "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
+      ]
+    },
+    {
+      "asset_id": "BM-030",
+      "category": "out_of_range",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "Model year not among documented model years",
+      "reasons": [
+        "Outside this report version: model year 2022 is not among the documented model years (2023, 2024, 2025, 2026, 2027).",
+        "Outside this report version: production date falls outside every documented production period in this report (MY2023: 2022-12-15 to 2022-12-20; MY2024: 2023-09-21 to 2023-10-25; MY2025: 2024-02-05 to 2024-10-02; MY2026: 2024-10-02 to 2025-10-07; MY2027: 2025-10-09 to 2026-02-02, p.2)."
+      ]
+    },
+    {
+      "asset_id": "BM-031",
+      "category": "out_of_range",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "Future model year outside the report",
+      "reasons": [
+        "Outside this report version: model year 2028 is not among the documented model years (2023, 2024, 2025, 2026, 2027).",
+        "Outside this report version: production date falls outside every documented production period in this report (MY2023: 2022-12-15 to 2022-12-20; MY2024: 2023-09-21 to 2023-10-25; MY2025: 2024-02-05 to 2024-10-02; MY2026: 2024-10-02 to 2025-10-07; MY2027: 2025-10-09 to 2026-02-02, p.2)."
+      ]
+    },
+    {
+      "asset_id": "BM-032",
+      "category": "out_of_range",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "Build date precedes the documented period for MY2025",
+      "reasons": [
+        "Outside this report version: production date precedes the documented affected production period for MY2025 (MY2025: 2024-02-05 to 2024-10-02, p.1).",
+        "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
+      ]
+    },
+    {
+      "asset_id": "BM-033",
+      "category": "configuration_exclusion",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "Air brake code inside production window",
+      "reasons": [
+        "Outside this report version: recorded brake configuration code 0004200 does not match the required Hydraulic Brake (feature code 0004100) (p.1). The report states explicitly: \"All other similar vehicles, which are not subject to this recall, are excluded.\"",
+        "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
+      ]
+    },
+    {
+      "asset_id": "BM-034",
+      "category": "configuration_exclusion",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "Different feature code inside production window",
+      "reasons": [
+        "Outside this report version: recorded brake configuration code 0004999 does not match the required Hydraulic Brake (feature code 0004100) (p.1). The report states explicitly: \"All other similar vehicles, which are not subject to this recall, are excluded.\"",
+        "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
+      ]
+    },
+    {
+      "asset_id": "BM-035",
+      "category": "configuration_exclusion",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "Non-hydraulic code at start of MY2023 window",
+      "reasons": [
+        "Outside this report version: recorded brake configuration code 0004300 does not match the required Hydraulic Brake (feature code 0004100) (p.1). The report states explicitly: \"All other similar vehicles, which are not subject to this recall, are excluded.\"",
+        "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
+      ]
+    },
+    {
+      "asset_id": "BM-036",
+      "category": "configuration_exclusion",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "Near-miss feature code is still an exclusion (exact code required)",
+      "reasons": [
+        "Outside this report version: recorded brake configuration code 0004101 does not match the required Hydraulic Brake (feature code 0004100) (p.1). The report states explicitly: \"All other similar vehicles, which are not subject to this recall, are excluded.\"",
+        "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
+      ]
+    },
+    {
+      "asset_id": "BM-037",
+      "category": "out_of_range",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "Different manufacturer",
+      "reasons": [
+        "Outside this report version: make/model 'BLUE BIRD VISION' does not appear in the reviewed report's involved vehicle list (IC BUS CESB, p.1).",
+        "Verification required: brake configuration feature code is not recorded. The reviewed criteria require Hydraulic Brake (feature code 0004100) and no evidence supports or refutes it."
+      ]
+    },
+    {
+      "asset_id": "BM-038",
+      "category": "out_of_range",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "Same make, different model",
+      "reasons": [
+        "Outside this report version: make/model 'IC BUS CE' does not appear in the reviewed report's involved vehicle list (IC BUS CESB, p.1).",
+        "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
+      ]
+    },
+    {
+      "asset_id": "BM-039",
+      "category": "out_of_range",
+      "expected": "OUTSIDE_REPORT_VERSION",
+      "predicted": "OUTSIDE_REPORT_VERSION",
+      "correct": true,
+      "note": "Different manufacturer inside production window",
+      "reasons": [
+        "Outside this report version: make/model 'THOMAS BUILT SAF-T-LINER' does not appear in the reviewed report's involved vehicle list (IC BUS CESB, p.1).",
+        "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
+      ]
+    },
+    {
+      "asset_id": "BM-040",
+      "category": "complete_match",
+      "expected": "CAMPAIGN_CRITERIA_MATCH",
+      "predicted": "CAMPAIGN_CRITERIA_MATCH",
+      "correct": true,
+      "note": "Full evidence, mid-window",
+      "reasons": [
+        "Campaign criteria match: make / model, model year, production date range, brake configuration feature code satisfy the reviewed campaign criteria.",
+        "CAMPAIGN_CRITERIA_MATCH is a match against the reviewed campaign criteria only. It is NOT a VIN-level confirmation that this individual vehicle has an open recall."
+      ]
+    }
+  ],
+  "label": "SYNTHETIC TEST BENCHMARK \u2014 NOT PRODUCTION FLEET ACCURACY"
+}

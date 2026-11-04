@@ -1,0 +1,59 @@
+# RouteShield - single-VM deployment (Vultr Cloud Compute)
+#
+#   docker compose up -d --build
+#
+# The web UI is published on ${HTTP_PORT:-8080}; the backend stays internal
+# (nginx proxies /api). State persists in the `routeshield-data` volume.
+
+name: routeshield
+
+services:
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DATABASE_URL: sqlite:////data/routeshield.db
+      REPORT_CACHE_DIR: /data/reports
+      ROUTESHIELD_MANAGER_USERNAME: ${ROUTESHIELD_MANAGER_USERNAME:-fleet.manager}
+      ROUTESHIELD_MANAGER_PASSWORD: ${ROUTESHIELD_MANAGER_PASSWORD:?set ROUTESHIELD_MANAGER_PASSWORD in .env}
+      ROUTESHIELD_AUTH_SECRET: ${ROUTESHIELD_AUTH_SECRET:?set ROUTESHIELD_AUTH_SECRET in .env}
+      AUTO_REFRESH_RECALL: ${AUTO_REFRESH_RECALL:-true}
+      ALLOW_OFFLINE_FALLBACK: ${ALLOW_OFFLINE_FALLBACK:-true}
+      VULTR_INFERENCE_API_KEY: ${VULTR_INFERENCE_API_KEY:-}
+      VULTR_INFERENCE_BASE_URL: ${VULTR_INFERENCE_BASE_URL:-https://api.vultrinference.com/v1}
+      VULTR_INFERENCE_MODEL: ${VULTR_INFERENCE_MODEL:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+    volumes:
+      - routeshield-data:/data
+    # Backend is intentionally NOT published to the host: all traffic goes
+    # through the frontend nginx proxy. For debugging you can temporarily
+    # uncomment:
+    # ports:
+    #   - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  routeshield-data:

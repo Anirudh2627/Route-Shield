@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Local state & secrets
+.env
+backend/data/routeshield.db*
+backend/data/test/
+backend/data/reports/
+scratch/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

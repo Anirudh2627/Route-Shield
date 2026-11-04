@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+  body {
+    @apply bg-slate-100 text-ink-900 font-sans text-[14px] leading-relaxed;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-slate-300 rounded-full border-2 border-slate-100;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-white border border-slate-200 rounded-xl shadow-sm;
+  }
+  .panel-title {
+    @apply text-[13px] font-semibold tracking-wide text-ink-500 uppercase;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold
+      transition-colors duration-150 disabled:opacity-45 disabled:cursor-not-allowed
+      focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1;
+  }
+  .btn-primary {
+    @apply btn bg-indigo-600 text-white hover:bg-indigo-700 focus-visible:ring-indigo-500;
+  }
+  .btn-approve {
+    @apply btn bg-emerald-600 text-white hover:bg-emerald-700 focus-visible:ring-emerald-500
+      shadow-[0_1px_2px_rgba(16,185,129,0.4)];
+  }
+  .btn-secondary {
+    @apply btn bg-white text-ink-700 border border-slate-300 hover:bg-slate-50 focus-visible:ring-slate-400;
+  }
+  .btn-danger {
+    @apply btn bg-rose-600 text-white hover:bg-rose-700 focus-visible:ring-rose-500;
+  }
+  .btn-ghost {
+    @apply btn text-ink-600 hover:bg-slate-100;
+  }
+  .input {
+    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-ink-900
+      placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500;
+  }
+  .table-th {
+    @apply px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-500
+      border-b border-slate-200 bg-slate-50/80;
+  }
+  .table-td {
+    @apply px-3 py-2.5 align-top border-b border-slate-100;
+  }
+}
+
+/* Approval success transition */
+@keyframes approveFlash {
+  0% { opacity: 0; transform: translateY(8px) scale(0.98); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.approve-flash {
+  animation: approveFlash 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes auditIn {
+  0% { opacity: 0; transform: translateX(-6px); background-color: rgb(236 253 245); }
+  100% { opacity: 1; transform: translateX(0); background-color: transparent; }
+}
+.audit-in {
+  animation: auditIn 1.2s ease-out both;
+}
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.pulse-dot {
+  animation: pulseDot 1.6s ease-in-out infinite;
+}

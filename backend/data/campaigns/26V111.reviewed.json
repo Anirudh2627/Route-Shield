@@ -1,0 +1,214 @@
+{
+  "$comment": "MANUALLY REVIEWED CAMPAIGN EVIDENCE FIXTURE. Transcribed and verified by a human reviewer against the official NHTSA Part 573 report PDF (URL and SHA-256 below). Used as an explicit fallback when live retrieval or extraction fails. When this fixture backs an incident the UI must display: 'Using manually reviewed campaign evidence.' This fixture must never be presented as a live extraction result.",
+  "campaign_number": "26V111",
+  "campaign_number_full": "26V111000",
+  "fixture_version": "1.0.0",
+  "reviewed_by": "RouteShield engineering (manual PDF review)",
+  "reviewed_at": "2026-11-03T00:00:00Z",
+  "source_document": {
+    "title": "Part 573 Safety Recall Report 26V111",
+    "url": "https://static.nhtsa.gov/odi/rcl/2026/RCLRPT-26V111-4068.pdf",
+    "sha256": "a29c04faf2273ba30ecfac16c0e2dfd0550f2aa2d7529e85cdce35844c8125f6",
+    "page_count": 5,
+    "retrieved_at": "2026-11-03T18:05:00Z"
+  },
+  "api_source": {
+    "url": "https://api.nhtsa.gov/recalls/campaignNumber?campaignNumber=26V111",
+    "retrieved_at": "2026-11-03T18:05:00Z",
+    "report_received_date": "27/02/2026"
+  },
+  "campaign": {
+    "manufacturer": "International Motors, LLC",
+    "manufacturer_recall_number": "26502",
+    "submission_date": "Feb 26, 2026",
+    "make": "IC BUS",
+    "model": "CESB",
+    "product_type": "School Bus",
+    "model_years": [2023, 2024, 2025, 2026, 2027],
+    "component": "SERVICE BRAKES, HYDRAULIC:FOUNDATION COMPONENTS:HOSES, LINES/PIPING, AND FITTINGS",
+    "summary": "International Motors, LLC (International) is recalling certain 2023-2027 IC Bus CESB school buses. The brake lines may have been installed with incorrect hardware, which can result in brake line damage and cause a leak.",
+    "consequence": "A brake fluid leak can extend the distance required to stop, increasing the risk of a crash.",
+    "remedy": "Dealers will inspect and replace the brake lines and brake line retainers as necessary, free of charge. Owner notification letters were mailed April 27, 2026. Owners may contact International's customer service at 1-800-448-7825. International's number for this recall is 26502. Vehicle Identification Numbers (VINs) involved in this recall will be searchable on NHTSA.gov beginning April 20, 2026.",
+    "potential_units_affected": 4393,
+    "vin_searchable_from": "Apr 20, 2026"
+  },
+  "criteria": [
+    {
+      "criterion_type": "MAKE_MODEL",
+      "label": "Make / Model",
+      "value": { "make": "IC BUS", "model": "CESB", "make_model": "IC BUS CESB" },
+      "source_page": 1,
+      "source_snippet": "Vehicle 1: 2025-2025 IC BUS CESB ... Vehicle 2: 2027-2027 IC BUS CESB",
+      "confidence": 1.0,
+      "review_status": "REVIEWED",
+      "extraction_method": "MANUALLY_REVIEWED"
+    },
+    {
+      "criterion_type": "PRODUCT_TYPE",
+      "label": "Product type",
+      "value": { "product_type": "School Bus" },
+      "source_page": 1,
+      "source_snippet": "Product Type: School Bus",
+      "confidence": 1.0,
+      "review_status": "REVIEWED",
+      "extraction_method": "MANUALLY_REVIEWED"
+    },
+    {
+      "criterion_type": "PRODUCTION_DATE_RANGE",
+      "label": "MY2023 production range (Vehicle 5)",
+      "value": {
+        "model_year_start": 2023,
+        "model_year_end": 2023,
+        "production_start": "2022-12-15",
+        "production_end": "2022-12-20",
+        "units": 2
+      },
+      "source_page": 2,
+      "source_snippet": "Vehicle 5: 2023-2023 IC BUS CESB ... Production Dates: Dec 15, 2022 - Dec 20, 2022 ... Number of potentially involved: 2",
+      "confidence": 1.0,
+      "review_status": "REVIEWED",
+      "extraction_method": "MANUALLY_REVIEWED"
+    },
+    {
+      "criterion_type": "PRODUCTION_DATE_RANGE",
+      "label": "MY2024 production range (Vehicle 4)",
+      "value": {
+        "model_year_start": 2024,
+        "model_year_end": 2024,
+        "production_start": "2023-09-21",
+        "production_end": "2023-10-25",
+        "units": 6
+      },
+      "source_page": 2,
+      "source_snippet": "Vehicle 4: 2024-2024 IC BUS CESB ... Production Dates: Sep 21, 2023 - Oct 25, 2023 ... Number of potentially involved: 6",
+      "confidence": 1.0,
+      "review_status": "REVIEWED",
+      "extraction_method": "MANUALLY_REVIEWED"
+    },
+    {
+      "criterion_type": "PRODUCTION_DATE_RANGE",
+      "label": "MY2025 production range (Vehicle 1)",
+      "value": {
+        "model_year_start": 2025,
+        "model_year_end": 2025,
+        "production_start": "2024-02-05",
+        "production_end": "2024-10-02",
+        "units": 1395
+      },
+      "source_page": 1,
+      "source_snippet": "Vehicle 1: 2025-2025 IC BUS CESB ... Production Dates: Feb 05, 2024 - Oct 02, 2024 ... Number of potentially involved: 1,395",
+      "confidence": 1.0,
+      "review_status": "REVIEWED",
+      "extraction_method": "MANUALLY_REVIEWED"
+    },
+    {
+      "criterion_type": "PRODUCTION_DATE_RANGE",
+      "label": "MY2026 production range (Vehicle 3)",
+      "value": {
+        "model_year_start": 2026,
+        "model_year_end": 2026,
+        "production_start": "2024-10-02",
+        "production_end": "2025-10-07",
+        "units": 2134
+      },
+      "source_page": 2,
+      "source_snippet": "Vehicle 3: 2026-2026 IC BUS CESB ... Production Dates: Oct 02, 2024 - Oct 07, 2025 ... Number of potentially involved: 2,134",
+      "confidence": 1.0,
+      "review_status": "REVIEWED",
+      "extraction_method": "MANUALLY_REVIEWED"
+    },
+    {
+      "criterion_type": "PRODUCTION_DATE_RANGE",
+      "label": "MY2027 production range (Vehicle 2)",
+      "value": {
+        "model_year_start": 2027,
+        "model_year_end": 2027,
+        "production_start": "2025-10-09",
+        "production_end": "2026-02-02",
+        "units": 856
+      },
+      "source_page": 1,
+      "source_snippet": "Vehicle 2: 2027-2027 IC BUS CESB ... Production Dates: Oct 09, 2025 - Feb 02, 2026 ... Number of potentially involved: 856",
+      "confidence": 1.0,
+      "review_status": "REVIEWED",
+      "extraction_method": "MANUALLY_REVIEWED"
+    },
+    {
+      "criterion_type": "OVERALL_BUILD_RANGE",
+      "label": "Overall suspect build window",
+      "value": { "start": "2022-12-15", "end": "2026-02-02" },
+      "source_page": 1,
+      "source_snippet": "The suspect population was identified by certain vehicles built 12/15/2022 thru 02/02/2026 with Hydraulic Brake (feature code 0004100).",
+      "confidence": 1.0,
+      "review_status": "REVIEWED",
+      "extraction_method": "MANUALLY_REVIEWED"
+    },
+    {
+      "criterion_type": "FEATURE_CODE",
+      "label": "Brake configuration feature code",
+      "value": { "feature_code": "0004100", "feature_description": "Hydraulic Brake" },
+      "source_page": 1,
+      "source_snippet": "... built 12/15/2022 thru 02/02/2026 with Hydraulic Brake (feature code 0004100).",
+      "confidence": 1.0,
+      "review_status": "REVIEWED",
+      "extraction_method": "MANUALLY_REVIEWED"
+    },
+    {
+      "criterion_type": "EXCLUSION",
+      "label": "Explicit exclusion of non-subject similar vehicles",
+      "value": {
+        "exclusion_statement": "All other similar vehicles, which are not subject to this recall, are excluded.",
+        "feature_code": "0004100"
+      },
+      "source_page": 1,
+      "source_snippet": "All other similar vehicles, which are not subject to this recall, are excluded.",
+      "confidence": 1.0,
+      "review_status": "REVIEWED",
+      "extraction_method": "MANUALLY_REVIEWED"
+    },
+    {
+      "criterion_type": "POPULATION",
+      "label": "Total potentially involved",
+      "value": { "total_units": 4393, "estimated_defect_percentage": "100%" },
+      "source_page": 1,
+      "source_snippet": "Total number of potentially involved: 4,393 Estimated percentage with defect: 100%",
+      "confidence": 1.0,
+      "review_status": "REVIEWED",
+      "extraction_method": "MANUALLY_REVIEWED"
+    }
+  ],
+  "descriptive": {
+    "defect_description": {
+      "value": "Vehicles may have been built with incorrect mounting hardware securing the brake line assembly. Deformation in the retainer may allow the brake line to disengage and contact the steering shaft.",
+      "source_page": 3,
+      "source_snippet": "Description of the defect or noncompliance: Vehicles may have been built with incorrect mounting hardware securing the brake line assembly."
+    },
+    "safety_risk": {
+      "value": "Contact between the brake line and steering shaft may result in a leak in the hydraulic brake system. A leak in the hydraulic brake system can result in a soft pedal and in an emergency stop situation may increase the vehicle stopping distance possibly resulting in a vehicle crash.",
+      "source_page": 3,
+      "source_snippet": "Description of the safety risk, including crash, fire, death, injury: Contact between the brake line and steering shaft may result in a leak in the hydraulic brake system."
+    },
+    "remedy_program": {
+      "value": "The remedy will involve inspecting brake line for damage, replace the brake lines if damaged, and replacing all brake line retainers.",
+      "source_page": 4,
+      "source_snippet": "Description of remedy program: The remedy will involve inspecting brake line for damage, replace the brake lines if damaged, and replacing all brake line retainers."
+    },
+    "remedy_type": {
+      "value": "Repair, Inspect, Replace",
+      "source_page": 4,
+      "source_snippet": "Remedy Type: Repair, Inspect, Replace"
+    },
+    "components": [
+      {
+        "value": { "name": "Brake Retainer", "description": "Clip, Multi-Tube", "part_number": "3523101C2" },
+        "source_page": 3,
+        "source_snippet": "Component Name 1: Brake Retainer Component Description: Clip, Multi-Tube Component Part Number: 3523101C2"
+      },
+      {
+        "value": { "name": "Hydraulic Brake Line", "description": "Hose,hyd Bk , Master Cylinder - Secondary", "part_number": "4232215C1" },
+        "source_page": 3,
+        "source_snippet": "Component Name 2: Hydraulic Brake Line Component Description: Hose,hyd Bk , Master Cylinder - Secondary Component Part Number: 4232215C1"
+      }
+    ]
+  }
+}
