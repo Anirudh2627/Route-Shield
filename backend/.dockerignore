@@ -7,3 +7,6 @@ data/reports/
 .env
 .venv/
 tests/
+.env*
+*.log
+.git

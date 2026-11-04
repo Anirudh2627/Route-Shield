@@ -90,10 +90,15 @@ def create_app() -> FastAPI:
         ),
         lifespan=lifespan,
     )
+    # CORS hardening: in production the frontend is same-origin (nginx proxies
+    # /api), so an empty CORS_ORIGINS must mean "no cross-origin access" — never
+    # a wildcard. Wildcard + allow_credentials=True would reflect arbitrary
+    # origins, so credentials are only enabled for explicit, non-wildcard lists.
+    cors_origins = settings.cors_origin_list
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origin_list or ["*"],
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=bool(cors_origins) and "*" not in cors_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )

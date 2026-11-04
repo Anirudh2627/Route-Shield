@@ -1,21 +1,52 @@
-# Python
-__pycache__/
-*.pyc
-.venv/
-.pytest_cache/
+# ============================================================
+# RouteShield release hygiene
+# ============================================================
 
-# Node
+# --- Secrets & local configuration --------------------------
+.env
+.env.*
+!.env.example
+
+# --- Python -------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Node / frontend ----------------------------------------
 node_modules/
 frontend/dist/
+frontend/tsconfig.tsbuildinfo
+*.tsbuildinfo
+npm-debug.log*
 
-# Local state & secrets
-.env
+# --- Local state: databases, caches, logs -------------------
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 backend/data/routeshield.db*
 backend/data/test/
 backend/data/reports/
-scratch/
+*.log
+logs/
 
-# Editors / OS
+# --- Build / backup artifacts --------------------------------
+dist/
+build/
+*.tgz
+*.tar.gz
+
+# --- Sandbox / editor / OS -----------------------------------
+.arena/
+scratch/
 .DS_Store
 .idea/
 .vscode/

@@ -1,0 +1,21 @@
+# Root-level Docker build context guard (compose builds use ./backend and
+# ./frontend contexts, each with their own .dockerignore; this protects any
+# future root-context build from shipping secrets or local state).
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.venv
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+*.db
+*.db-wal
+*.db-shm
+*.log
+.arena
+scratch
+frontend/dist
+DEPLOYMENT_CHECKLIST.md
