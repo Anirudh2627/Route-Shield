@@ -43,14 +43,21 @@ def decode_single_vin(
 
 
 @router.post("/recall-check-single-vin",
-             summary="Individual VIN recall check via official NHTSA API (manager-triggered, single VIN)")
+             summary="Individual VIN recall check attempt (manager-triggered, single VIN, undocumented endpoint)")
 def recall_check_single_vin(
     payload: DecodeVinRequest,
     db: Session = Depends(get_db),
     manager: models.ManagerUser = Depends(get_current_manager),
 ) -> dict:
     """The only path that can produce a real VIN-level recall result - and
-    only when an actual individually retrieved source result exists."""
+    only when an actual individually retrieved source result exists.
+
+    Honesty note: `api.nhtsa.gov/recalls/vin` is NOT documented as an
+    officially supported NHTSA API endpoint. When it declines or is
+    unavailable, this endpoint reports the honest UNAVAILABLE state (HTTP 502
+    with an explanatory message) and never records a VIN-confirmed status.
+    The manual verification path is NHTSA's public recall lookups at
+    https://www.nhtsa.gov/recalls."""
     try:
         result = vpic_service.recall_check_single_vin(db, payload.vin, manager.username)
     except VINPolicyError as exc:
@@ -58,7 +65,8 @@ def recall_check_single_vin(
     except VPICError as exc:
         raise HTTPException(502, str(exc))
     result["note"] = (
-        "Single human-triggered check. This is never automated or bulk-executed. "
-        "Results apply only to this VIN at the retrieval timestamp."
+        "Single human-triggered check against an endpoint that is not documented as officially "
+        "supported; this is never automated or bulk-executed. Results apply only to this VIN at "
+        f"the retrieval timestamp. Manual verification: {vpic_service.NHTSA_MANUAL_VIN_LOOKUP_URL}."
     )
     return result

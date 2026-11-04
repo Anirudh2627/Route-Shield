@@ -171,11 +171,20 @@ def decode_single_vin(db: Session, vin: str, model_year: str | None, actor: str)
     }
 
 
+NHTSA_MANUAL_VIN_LOOKUP_URL = "https://www.nhtsa.gov/recalls"
+
+
 def recall_check_single_vin(db: Session, vin: str, actor: str) -> dict:
-    """Single human-triggered individual VIN recall check against the official
-    NHTSA recalls API. This is the ONLY path that can produce a real
-    VIN-confirmed recall status - and only when an actual source result is
-    retrieved. Never automated, never bulk."""
+    """Single human-triggered individual VIN recall check.
+
+    HONESTY NOTE: this attempts `api.nhtsa.gov/recalls/vin`, which is NOT part
+    of NHTSA's documented, officially supported API catalog (the documented
+    recalls endpoints are campaignNumber- and vehicle-attribute-based). Its
+    availability to third parties is not established; when it declines or
+    fails, RouteShield reports VIN verification as UNAVAILABLE and points the
+    user to NHTSA's manual VIN lookup. This is the ONLY code path that can
+    produce a real VIN-confirmed recall status - and only when an actual
+    source result is retrieved. Never automated, never bulk."""
     settings = get_settings()
     vin = vin.strip().upper()
     _guard_synthetic(db, vin)
@@ -184,16 +193,19 @@ def recall_check_single_vin(db: Session, vin: str, actor: str) -> dict:
     try:
         with httpx.Client(timeout=settings.http_timeout_seconds, follow_redirects=True) as client:
             resp = client.get(url, params={"vin": vin})
-            if resp.status_code in (401, 403):
-                # NHTSA protects VIN-level lookups from third-party automated
-                # access. RouteShield reports this honestly instead of ever
-                # fabricating a VIN-confirmed state.
+            if resp.status_code in (401, 403, 404):
+                # The endpoint refused the request. We do not attribute this to
+                # any specific NHTSA policy; the endpoint is simply not
+                # established as officially supported for this use. Report the
+                # honest unavailable state and provide the manual lookup path.
                 raise VPICError(
-                    "NHTSA declined the individual VIN recall lookup (HTTP "
-                    f"{resp.status_code}). VIN-specific recall verification is therefore "
-                    "UNAVAILABLE for this VIN; no VIN-confirmed status will be recorded. "
-                    "NHTSA's VIN search is not offered for third-party automated access - "
-                    "verify manually at https://www.nhtsa.gov/recalls if required."
+                    f"The VIN recall lookup endpoint ({url}) declined the request "
+                    f"(HTTP {resp.status_code}). This endpoint is not documented as an "
+                    "officially supported NHTSA API, so its availability cannot be relied "
+                    "upon. VIN-specific recall verification is therefore UNAVAILABLE for "
+                    "this VIN; no VIN-confirmed status has been recorded. Manual "
+                    f"verification: {NHTSA_MANUAL_VIN_LOOKUP_URL} (enter the VIN in "
+                    "NHTSA's recall lookups)."
                 )
             resp.raise_for_status()
             payload = resp.json()
@@ -209,7 +221,10 @@ def recall_check_single_vin(db: Session, vin: str, actor: str) -> dict:
         db, actor=actor, action="VIN_RECALL_CHECK", entity_type="VIN", entity_id=vin,
         new_state={"recalls_returned": len(results)},
         result="RETRIEVED",
-        detail="Single human-triggered individual VIN recall check against api.nhtsa.gov/recalls/vin.",
+        detail=(
+            "Single human-triggered individual VIN recall check against "
+            "api.nhtsa.gov/recalls/vin (undocumented endpoint; result actually retrieved)."
+        ),
         flush_only=False,
     )
     return {"vin": vin, "results": results, "retrieved_at": datetime.now(timezone.utc).isoformat()}

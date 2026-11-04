@@ -1,7 +1,7 @@
 # RouteShield — Engineering Report
 
 **Vultr Agent Rush Hackathon 2026 · Track 2: Powering the Future of Work**
-Report date: 2026-11-03 · Backend engine v1.1.0 · App v0.1.0
+Report date: 2026-11-03 · Revised 2026-11-04 (targeted correctness fixes) · Backend engine v1.2.0 · App v0.1.0
 
 ---
 
@@ -143,11 +143,15 @@ Verified against the live dev servers (uvicorn :8000 + vite :5173), not just uni
 * **Part 573 report PDF** (`RCLRPT-26V111-4068.pdf`): **working live**; downloaded, parsed,
   SHA-256 `a29c04faf2273ba30ecfac16c0e2dfd0550f2aa2d7529e85cdce35844c8125f6`, cached by hash.
 * **vPIC decode** (`DecodeVinValuesExtended`): **working live** (see §8).
-* **VIN-level recall lookup** (`/recalls/vin`): NHTSA returns 401/403 (“Missing
-  Authentication Token” / Akamai “Access Denied”) for third-party automated access from this
-  environment. RouteShield reports this honestly as *verification unavailable* and never
-  fabricates VIN-confirmed status. No bulk VIN recall requests exist anywhere (enforced by
-  test `test_no_bulk_endpoint_exists`).
+* **VIN-level recall lookup** (`/recalls/vin`): this endpoint is **not documented as an
+  officially supported NHTSA API** (the documented recalls endpoints are campaignNumber- and
+  vehicle-attribute-based). From this environment a GET returned API Gateway’s “Missing
+  Authentication Token” (unmatched route) and a POST returned an Akamai “Access Denied”; we do
+  not attribute the failure to any specific NHTSA policy. RouteShield keeps attempting it only
+  as a single human-triggered check, reports the honest **UNAVAILABLE** state when declined,
+  provides the manual lookup link (https://www.nhtsa.gov/recalls), and never fabricates a
+  VIN-confirmed status. No bulk VIN recall requests exist anywhere (enforced by test
+  `test_no_bulk_endpoint_exists`).
 * Offline behavior: any NHTSA failure ⇒ reviewed fixture with explicit banner (tested).
 
 ## 7. PDF extraction accuracy limitations & fallback status
@@ -181,30 +185,38 @@ environment (§6) — the honest-unavailability path is what executes and is tes
 
 ```
 cd backend && python -m pytest tests/ -q
-93 passed, 0 failed, 0 errors  (~30 s, fully offline: fixtures + monkeypatched HTTP)
+114 passed, 0 failed, 0 errors  (~31 s, fully offline: fixtures + monkeypatched HTTP)
 ```
 
 Coverage by required area:
-* A. Recall extraction — 16 tests (real-PDF extraction incl. page refs & snippets, invalid
+* A. Recall extraction — 21 tests (real-PDF extraction incl. page refs & snippets, invalid
   PDF, unrelated PDF, date parsing, LLM valid/invalid-JSON/schema-violation/missing-fields/
   inference-failure/not-configured, fixture fallback, hash-inherited review, changed document).
-* B. Vehicle assessment — 18 tests (exact match, missing build date/config/everything,
+* B. Vehicle assessment — 30 tests (exact match, missing build date/config/everything,
   outside range both directions, explicit exclusion, conflicts, parametrized
-  no-false-confirmation, explanation completeness, API consistency).
-* C. Route recovery — 10 tests (capacity, depot, characteristics, duplicates, unavailable
+  no-false-confirmation, explanation completeness, API consistency, plus the identity
+  matrix: missing make, missing model, both missing, explicit mismatch, and partial identity
+  with a positive conflict — incomplete identity never yields OUTSIDE_REPORT_VERSION).
+* C. Route recovery — 11 tests (capacity, depot, characteristics, duplicates, unavailable
   spare, unverified spare never proposed, policy-dependent handling both ways, determinism,
   supersede).
-* D. Authorization/approval — 13 tests (unauthenticated 401s, bad credentials, tampered
-  tokens, invalid proposal/hash/policy, availability re-check, stale-route re-check, no
-  state change before approval, persisted approval, double approval, policy-change supersede).
+* D+F. Authorization, approval and audit — 25 tests (unauthenticated 401s, bad credentials,
+  tampered tokens, invalid proposal/hash/policy, replacement-availability re-check, stale
+  route re-check for feasible **and infeasible and manager-review-only** assignments with
+  full rollback verification, no state change before approval, persisted approval, double
+  approval, policy-change supersede, append-only route/module scans, previous/new state and
+  actor correctness, rejection auditing, immediate audit visibility via API).
 * E. VIN handling — 12 tests (synthetic never sent — two guards + API level, one-at-a-time
   schema, no bulk endpoint, cache hit = no second outbound call, unknown fields stay unknown,
-  audit wording, upstream failure → 502, no auto-decodes during workflow).
-* F. Audit — append-only routes test, module-scan test (no update/delete), previous/new state
-  correctness, actor correctness, rejection auditing, immediate visibility via API.
-* G. Benchmark — determinism (double run), false-confirmation & abstention formulas
-  recomputed independently from case results, confusion-matrix totals, label coverage,
-  API endpoints.
+  audit wording, upstream failure → 502, declined VIN recall check reports the honest
+  UNAVAILABLE state with the manual NHTSA lookup link and no bulk-policy attribution, no
+  auto-decodes during workflow).
+* G. Benchmark — 13 tests (determinism double-run, false-confirmation & abstention formulas
+  recomputed independently from case results, confusion-matrix totals, label coverage, API
+  endpoints, plus fixture-tie tests: criteria load from the reviewed fixture, rows match the
+  fixture exactly, and the benchmark refuses a changed document hash, missing required
+  criteria, unreviewed criteria, or a missing fixture).
+* End-to-end — 2 tests (offline Day-1 gate through the HTTP API; mocked live-NHTSA refresh).
 
 One benchmark case (BM-015) initially disagreed with the engine; investigation showed the
 **test case label was wrong** (its build date was outside the documented window, so
@@ -213,19 +225,26 @@ weakened. This is recorded here for transparency.
 
 ## 10. Benchmark results (measured, not invented)
 
-`python scripts/run_benchmark.py --verify-determinism` (engine v1.1.0, 2026-11-03):
+`python scripts/run_benchmark.py --verify-determinism` (engine v1.2.0, 2026-11-04):
 
 ```
 SYNTHETIC TEST BENCHMARK — NOT PRODUCTION FLEET ACCURACY
+Criteria source             : https://static.nhtsa.gov/odi/rcl/2026/RCLRPT-26V111-4068.pdf
+Document SHA-256            : a29c04faf2273ba30ecfac16c0e2dfd0550f2aa2d7529e85cdce35844c8125f6
 Sample count                : 40
 Correct campaign-match rate : 100.0%  (11/11)
 Correct abstention rate     : 100.0%  (12/12)
 FALSE-CONFIRMATION RATE     : 0.0%    (0/12)
 Outside-report accuracy     : 100.0%  (17/17)
 Overall accuracy            : 100.0%  (40/40)
-DETERMINISM CHECK           : PASSED (two consecutive runs identical)
+DETERMINISM CHECK           : PASSED (two consecutive runs identical; also verified
+                              identical across two separate processes)
 Confusion matrix (expected↓/predicted→): MATCH 11/0/0 · VERIF 0/12/0 · OUTSIDE 0/0/17
 ```
+
+The benchmark criteria are loaded directly from the manually reviewed fixture
+(`backend/data/campaigns/26V111.reviewed.json`) and pinned to its document SHA-256; the
+runner refuses to execute if the fixture hash, required criteria, or review statuses diverge.
 
 Computed at runtime from hand-labelled ground truth covering boundary dates (±1 day),
 missing/conflicting fields, exclusions and wrong make-model. The UI (Incident Command strip
@@ -259,8 +278,11 @@ checklist) to complete it in ~10 minutes on a Vultr Cloud Compute VM.
    here). The integration is complete and unit-tested with mocks; it is optional by design —
    with `VULTR_INFERENCE_API_KEY` unset the deterministic parser + reviewed fixture carry the
    product. Setting the key enables supplementary `NEEDS_REVIEW` extraction.
-3. **NHTSA VIN-level recall lookup blocked** for third-party automation (401/403). Handled
-   honestly; manual verification at nhtsa.gov remains the human path.
+3. **NHTSA VIN-level recall lookup unverified.** `api.nhtsa.gov/recalls/vin` is not documented
+   as an officially supported endpoint and declined requests from this environment. The code
+   keeps the honest UNAVAILABLE state, never fabricates a VIN-confirmed status, and links to
+   the manual lookup at https://www.nhtsa.gov/recalls. Confirming whether NHTSA offers any
+   supported individual-VIN recall API remains open.
 4. Report parser targets the standard Part 573 layout; unusual layouts fall back to the
    reviewed fixture (by design) — extending parsers to other campaigns is future work.
 5. MVP auth is a single manager account with in-process HMAC tokens (sufficient per spec);
@@ -293,3 +315,52 @@ Docker (on the Vultr VM): `docker compose up -d --build` → `http://<vm-ip>:808
 | 3 | Synthetic fleet assessed deterministically | ✅ 15/15 vehicles, reasons per classification, benchmark 40/40 |
 | 4 | Affected routes & feasible replacements calculated | ✅ 5 disrupted, 2 recoverable, 3 with explicit unresolved issues |
 | 5 | Manager approval persists state + audit | ✅ transactional, re-validated, append-only audit, UI transition |
+
+---
+
+## Revision 2 (2026-11-04) — targeted correctness fixes
+
+Four scoped corrections; no redesign, no feature additions, no API-contract or frontend-design
+changes.
+
+1. **Assessment correction** (`backend/app/services/assessment.py`, engine v1.1.0 → v1.2.0):
+   missing make or model information no longer produces OUTSIDE_REPORT_VERSION. Identity
+   matching is three-state: recorded fields that positively conflict ⇒ exclusion; incomplete
+   identity without decisive conflict ⇒ UNKNOWN ⇒ VERIFICATION_REQUIRED ("Incomplete identity
+   is not evidence of exclusion"). Tests added: missing make, missing model, both missing,
+   explicit mismatch, partial identity with positive conflict, and a parametrized guarantee
+   that no incomplete-identity case is classified OUTSIDE.
+2. **Approval stale-state correction** (`backend/app/services/approval.py`): the original
+   route-assignment re-validation now runs for EVERY assignment — feasible replacements,
+   infeasible assignments without replacement, and NOT_APPLICABLE manager-review
+   assignments — before any change is applied. Any drift rejects the whole approval
+   (rollback), records a RECOVERY_PLAN_APPROVAL_REJECTED audit event, and leaves all state
+   untouched. Regression tests added for the infeasible and manager-review-only cases, each
+   asserting nothing else in the plan was applied.
+3. **VIN lookup honesty** (`backend/app/services/vpic_service.py`, `backend/app/routers/vpic.py`):
+   `/recalls/vin` is no longer described as an official/documented NHTSA endpoint; failure
+   messages no longer attribute the decline to NHTSA's bulk-lookup policy. The honest
+   UNAVAILABLE state is retained and the response/error now carries the manual lookup link
+   (https://www.nhtsa.gov/recalls). Test added asserting the wording, the link, and the
+   absence of bulk-policy attribution.
+4. **Benchmark consistency** (`backend/app/benchmark/runner.py`, `scripts/run_benchmark.py`):
+   benchmark criteria are now loaded from the manually reviewed fixture itself (no private
+   hardcoded copy), pinned to its document SHA-256, and validated (5 ranges, feature code,
+   exclusion, overall window containment, all rows REVIEWED). Any divergence raises instead of
+   silently benchmarking different criteria; `benchmark_provenance()` and the CLI print the
+   fixture URL/hash. Tests added for the tie and for each divergence guard.
+
+Changed files:
+`backend/app/services/assessment.py`, `backend/app/services/approval.py`,
+`backend/app/services/vpic_service.py`, `backend/app/routers/vpic.py`,
+`backend/app/benchmark/runner.py`, `scripts/run_benchmark.py`,
+`backend/tests/test_assessment.py`, `backend/tests/test_approval_auth.py`,
+`backend/tests/test_vpic.py`, `backend/tests/test_benchmark.py`,
+`README.md`, `ENGINEERING_REPORT.md`.
+
+Re-verification (2026-11-04): **114/114 tests passed** (~31 s, offline); benchmark run twice
+in-process (`--verify-determinism` PASSED) and once more in a separate process — metrics,
+confusion matrix and all 40 predictions identical: match 11/11, abstention 12/12,
+false-confirmation 0/12, outside 17/17, overall 40/40. Seeded-fleet classification counts
+unchanged (3 match / 4 verification-required / 8 outside), confirming no regression to the
+existing workflow.

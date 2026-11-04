@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 
-ENGINE_VERSION = "1.1.0"
+ENGINE_VERSION = "1.2.0"
 
 NOT_SAFE_DISCLAIMER = (
     "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; "
@@ -206,38 +206,50 @@ def classify_vehicle(vehicle: dict, criteria: CampaignCriteria) -> AssessmentRes
     crit_make = _norm(criteria.make)
     crit_model = _norm(criteria.model)
     crit_make_model = _norm(criteria.make_model)
-    veh_make_model = f"{veh_make}{veh_model}"
 
-    # --- Make / model -------------------------------------------------------
+    # --- Make / model ---------------------------------------------------------
+    # Incomplete identity information is UNKNOWN evidence, not exclusion.
+    # Only positive, decisive conflicts on recorded fields may establish an
+    # exclusion; a missing make or model alone must lead to abstention.
     if crit_make_model or (crit_make and crit_model):
-        if not veh_make and not veh_model:
+        required_mm = criteria.make_model or f"{criteria.make} {criteria.model}".strip()
+        display_mm = f"{vehicle.get('make') or ''} {vehicle.get('model') or ''}".strip()
+        page_ref = f", p.{criteria.make_model_page}" if criteria.make_model_page else ""
+        result, conflict = _identity_check(veh_make, veh_model, crit_make, crit_model, crit_make_model)
+        if result == SATISFIED:
             checks.append(CriterionCheck("MAKE_MODEL", "Make / Model", criteria.make_model_page,
-                                         criteria.make_model or f"{criteria.make} {criteria.model}",
-                                         "(not recorded)", UNKNOWN))
-            unknown_present = True
-            reasons.append("Verification required: make and model are not recorded for this vehicle.")
-        else:
-            matches = False
-            if crit_make and crit_model:
-                matches = veh_make == crit_make and veh_model == crit_model
-            if not matches and crit_make_model:
-                matches = veh_make_model == crit_make_model
-            if matches:
-                checks.append(CriterionCheck("MAKE_MODEL", "Make / Model", criteria.make_model_page,
-                                             criteria.make_model or f"{criteria.make} {criteria.model}",
-                                             f"{vehicle.get('make', '')} {vehicle.get('model', '')}".strip(),
-                                             SATISFIED))
+                                         required_mm, display_mm or "(not recorded)", SATISFIED))
+        elif result == FAILED:
+            checks.append(CriterionCheck("MAKE_MODEL", "Make / Model", criteria.make_model_page,
+                                         required_mm, display_mm or "(not recorded)", FAILED))
+            decisive_outside = True
+            raw_make = (vehicle.get("make") or "").strip()
+            raw_model = (vehicle.get("model") or "").strip()
+            if conflict == "make":
+                conflict_text = f"recorded make '{raw_make}' does not match the required make"
+            elif conflict == "model":
+                conflict_text = f"recorded model '{raw_model}' does not match the required model"
             else:
-                display_mm = f"{vehicle.get('make') or '?'} {vehicle.get('model') or '?'}".strip()
-                required_mm = criteria.make_model or f"{criteria.make} {criteria.model}".strip()
-                page_ref = f", p.{criteria.make_model_page}" if criteria.make_model_page else ""
-                checks.append(CriterionCheck("MAKE_MODEL", "Make / Model", criteria.make_model_page,
-                                             required_mm, display_mm, FAILED))
-                decisive_outside = True
-                reasons.append(
-                    f"Outside this report version: make/model '{display_mm}' does not appear in the "
-                    f"reviewed report's involved vehicle list ({required_mm}{page_ref})."
-                )
+                conflict_text = f"recorded make/model '{display_mm}' does not match"
+            reasons.append(
+                f"Outside this report version: {conflict_text} — positive evidence conflicting "
+                f"with the reviewed report's involved vehicle list ({required_mm}{page_ref})."
+            )
+        else:  # UNKNOWN - identity incomplete without decisive conflict
+            missing = []
+            if not veh_make:
+                missing.append("make")
+            if not veh_model:
+                missing.append("model")
+            checks.append(CriterionCheck("MAKE_MODEL", "Make / Model", criteria.make_model_page,
+                                         required_mm, display_mm + " (incomplete)" if display_mm else "(not recorded)",
+                                         UNKNOWN))
+            unknown_present = True
+            reasons.append(
+                f"Verification required: {' and '.join(missing)} not recorded for this vehicle; "
+                f"identity cannot be checked against the reviewed criteria ({required_mm}{page_ref}). "
+                "Incomplete identity is not evidence of exclusion."
+            )
 
     # --- Model year ---------------------------------------------------------
     if criteria.model_years:
@@ -393,6 +405,51 @@ def _ranges_label(ranges: list[ProductionRange]) -> str:
         f": {r.production_start.isoformat()} to {r.production_end.isoformat()}"
         for r in ranges
     )
+
+
+def _identity_check(
+    veh_make: str, veh_model: str, crit_make: str, crit_model: str, crit_make_model: str
+) -> tuple[str, str | None]:
+    """Three-state make/model identity matching on normalized values.
+
+    Returns (result, conflict_field) where result is SATISFIED / FAILED /
+    UNKNOWN and conflict_field names the recorded field that positively
+    conflicts ('make', 'model' or 'make_model').
+
+    FAILED is returned ONLY when a RECORDED field decisively conflicts with
+    the reviewed criteria. A missing field without a decisive conflict on the
+    recorded one yields UNKNOWN - incomplete identity is abstention evidence,
+    never exclusion evidence.
+    """
+    if not veh_make and not veh_model:
+        return UNKNOWN, None
+    if veh_make and veh_model:
+        if crit_make and crit_model:
+            ok = veh_make == crit_make and veh_model == crit_model
+        else:
+            ok = (veh_make + veh_model) == crit_make_model
+        if ok:
+            return SATISFIED, None
+        if crit_make and veh_make != crit_make:
+            return FAILED, "make"
+        if crit_model and veh_model != crit_model:
+            return FAILED, "model"
+        return FAILED, "make_model"
+    if veh_make:
+        # Model not recorded: only a decisive make conflict may exclude.
+        if crit_make:
+            if veh_make != crit_make:
+                return FAILED, "make"
+        elif crit_make_model and not crit_make_model.startswith(veh_make):
+            return FAILED, "make"
+        return UNKNOWN, None
+    # Model recorded, make not: only a decisive model conflict may exclude.
+    if crit_model:
+        if veh_model != crit_model:
+            return FAILED, "model"
+    elif crit_make_model and not crit_make_model.endswith(veh_model):
+        return FAILED, "model"
+    return UNKNOWN, None
 
 
 def _conflicting_brake_terms(cfg_text: str, feature_description: str) -> str:

@@ -91,7 +91,7 @@ backend/                 FastAPI application
       vpic_service.py    single human-triggered VIN decode/recall-check, cached, throttled
     benchmark/           ground-truth cases + metric runner (nothing hardcoded)
     data/campaigns/26V111.reviewed.json   manually reviewed fallback fixture (hash-pinned)
-  tests/                 93 automated tests (pytest), incl. the real report PDF fixture
+  tests/                 114 automated tests (pytest), incl. the real report PDF fixture
 frontend/                React + TypeScript + Vite + Tailwind CSS
   src/views/             Incident Command · Fleet · Route Recovery · Evidence & Audit
 scripts/run_benchmark.py reproducible benchmark CLI
@@ -135,7 +135,7 @@ duplicates incidents, vehicles or routes.
 ### Tests & benchmark
 
 ```bash
-cd backend && python -m pytest tests/ -q     # 93 tests, fully offline (fixtures + mocks)
+cd backend && python -m pytest tests/ -q     # 114 tests, fully offline (fixtures + mocks)
 python scripts/run_benchmark.py --verify-determinism
 ```
 

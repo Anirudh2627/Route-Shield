@@ -1,6 +1,6 @@
 {
-  "run_at": "2026-11-03T19:11:46.390596+00:00",
-  "engine_version": "1.1.0",
+  "run_at": "2026-11-04T05:33:30.171414+00:00",
+  "engine_version": "1.2.0",
   "campaign_number": "26V111",
   "sample_count": 40,
   "duration_ms": 1,
@@ -210,7 +210,7 @@
       "correct": true,
       "note": "Make and model missing (build date inside the MY2025 window)",
       "reasons": [
-        "Verification required: make and model are not recorded for this vehicle.",
+        "Verification required: make and model not recorded for this vehicle; identity cannot be checked against the reviewed criteria (IC BUS CESB, p.1). Incomplete identity is not evidence of exclusion.",
         "Absence of evidence is not evidence of safety: the system abstains from concluding that this vehicle is unaffected while critical evidence is missing or ambiguous."
       ]
     },
@@ -474,7 +474,7 @@
       "correct": true,
       "note": "Different manufacturer",
       "reasons": [
-        "Outside this report version: make/model 'BLUE BIRD VISION' does not appear in the reviewed report's involved vehicle list (IC BUS CESB, p.1).",
+        "Outside this report version: recorded make 'BLUE BIRD' does not match the required make \u2014 positive evidence conflicting with the reviewed report's involved vehicle list (IC BUS CESB, p.1).",
         "Verification required: brake configuration feature code is not recorded. The reviewed criteria require Hydraulic Brake (feature code 0004100) and no evidence supports or refutes it."
       ]
     },
@@ -486,7 +486,7 @@
       "correct": true,
       "note": "Same make, different model",
       "reasons": [
-        "Outside this report version: make/model 'IC BUS CE' does not appear in the reviewed report's involved vehicle list (IC BUS CESB, p.1).",
+        "Outside this report version: recorded model 'CE' does not match the required model \u2014 positive evidence conflicting with the reviewed report's involved vehicle list (IC BUS CESB, p.1).",
         "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
       ]
     },
@@ -498,7 +498,7 @@
       "correct": true,
       "note": "Different manufacturer inside production window",
       "reasons": [
-        "Outside this report version: make/model 'THOMAS BUILT SAF-T-LINER' does not appear in the reviewed report's involved vehicle list (IC BUS CESB, p.1).",
+        "Outside this report version: recorded make 'THOMAS BUILT' does not match the required make \u2014 positive evidence conflicting with the reviewed report's involved vehicle list (IC BUS CESB, p.1).",
         "OUTSIDE_REPORT_VERSION does NOT mean this vehicle is safe or free of recalls; it means the criteria documented in this report version do not cover it."
       ]
     },
@@ -515,5 +515,18 @@
       ]
     }
   ],
-  "label": "SYNTHETIC TEST BENCHMARK \u2014 NOT PRODUCTION FLEET ACCURACY"
+  "label": "SYNTHETIC TEST BENCHMARK \u2014 NOT PRODUCTION FLEET ACCURACY",
+  "provenance": {
+    "campaign_number": "26V111",
+    "fixture_version": "1.0.0",
+    "reviewed_by": "RouteShield engineering (manual PDF review)",
+    "reviewed_at": "2026-11-03T00:00:00Z",
+    "source_document_url": "https://static.nhtsa.gov/odi/rcl/2026/RCLRPT-26V111-4068.pdf",
+    "document_sha256": "a29c04faf2273ba30ecfac16c0e2dfd0550f2aa2d7529e85cdce35844c8125f6",
+    "page_count": 5,
+    "criteria_document_sha256": "a29c04faf2273ba30ecfac16c0e2dfd0550f2aa2d7529e85cdce35844c8125f6",
+    "production_ranges": 5,
+    "feature_code": "0004100",
+    "hash_matches_criteria": true
+  }
 }

@@ -197,6 +197,50 @@ def test_vpic_failure_surfaces_as_502(client, manager_headers, monkeypatch):
     assert r.status_code == 502
 
 
+def test_vin_recall_check_declined_reports_honest_unavailable_with_manual_link(db, monkeypatch):
+    """When the (undocumented) VIN recall endpoint declines, the error must:
+    state the honest UNAVAILABLE status, provide the manual NHTSA lookup link,
+    describe the endpoint as not officially documented, and NOT attribute the
+    failure to NHTSA's bulk-lookup policy."""
+    class _Resp:
+        status_code = 403
+        text = "Access Denied"
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {}
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, **kwargs):
+            assert "/recalls/vin" in url
+            return _Resp()
+
+    monkeypatch.setattr(vpic_service.httpx, "Client", _Client)
+    monkeypatch.setattr(vpic_service, "_throttle", lambda: None)
+    with pytest.raises(vpic_service.VPICError) as excinfo:
+        vpic_service.recall_check_single_vin(db, "1HGCM82633A004352", "tester")
+    msg = str(excinfo.value)
+    assert "UNAVAILABLE" in msg
+    assert vpic_service.NHTSA_MANUAL_VIN_LOOKUP_URL in msg
+    assert "not documented" in msg.lower()
+    # Must not claim the bulk-lookup policy caused this endpoint's failure:
+    assert "bulk" not in msg.lower()
+    # No VIN-confirmed state was fabricated:
+    veh_events = [e for e in db.scalars(select(models.AuditEvent)) if e.action == "VIN_RECALL_CHECK"]
+    assert veh_events == []
+
+
 def test_synthetic_fleet_never_auto_decoded(client, incident_id, db):
     """No workflow step (assessment, refresh, plan, approval) may create a
     VINDecodeCache entry - decodes are human-triggered only."""

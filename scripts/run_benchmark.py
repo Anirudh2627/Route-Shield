@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
-from app.benchmark.runner import run_benchmark  # noqa: E402
+from app.benchmark.runner import benchmark_provenance, run_benchmark  # noqa: E402
 
 
 def main() -> int:
@@ -33,7 +33,9 @@ def main() -> int:
                         help="write the benchmark JSON result to this path")
     args = parser.parse_args()
 
+    prov = benchmark_provenance()
     result = run_benchmark()
+    result["provenance"] = prov
 
     if args.verify_determinism:
         second = run_benchmark()
@@ -62,6 +64,10 @@ def main() -> int:
     print("=" * 72)
     print(f"Engine version        : {result['engine_version']}")
     print(f"Campaign              : {result['campaign_number']} (reviewed criteria)")
+    print(f"Criteria source       : {prov.get('source_document_url')}")
+    print(f"Document SHA-256      : {prov.get('document_sha256')}")
+    print(f"Criteria hash match   : {prov.get('hash_matches_criteria')} "
+          f"| ranges {prov.get('production_ranges')} | feature code {prov.get('feature_code')}")
     print(f"Sample count          : {result['sample_count']}")
     print(f"Duration              : {result['duration_ms']} ms")
     print(f"Run at                : {result['run_at'].isoformat()}")

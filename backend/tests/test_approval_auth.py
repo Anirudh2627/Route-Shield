@@ -133,6 +133,78 @@ def test_approval_rechecks_route_still_has_original_vehicle(client, incident_id,
     assert "stale" in r.json()["detail"]["reason"].lower()
 
 
+def test_stale_infeasible_route_rejects_whole_approval_without_applying_anything(client, incident_id, db):
+    """Regression: routes with NO feasible replacement must also be
+    re-validated. A stale infeasible route rejects the entire approval and
+    rolls back every other change (including feasible reassignments)."""
+    h, plan = _make_pending_plan(client, incident_id, policy="HOLD_PENDING_VERIFICATION")
+    # R-104 is infeasible in this plan (no compatible spare at South depot).
+    r104 = next(a for a in plan["assignments"] if a["route"]["route_id"] == "R-104")
+    assert r104["feasible"] is False and r104["replacement_vehicle"] is None
+    route = db.scalar(select(models.FleetRoute).where(models.FleetRoute.route_id == "R-104"))
+    bus004 = db.scalar(select(models.FleetVehicle).where(models.FleetVehicle.asset_id == "SYNTHETIC-BUS-004"))
+    other = db.scalar(select(models.FleetVehicle).where(models.FleetVehicle.asset_id == "SYNTHETIC-BUS-007"))
+    route.assigned_vehicle_id = other.id  # concurrent reassignment since generation
+    db.commit()
+
+    r = client.post(f"/api/incidents/{incident_id}/approve-plan", headers=h,
+                    json={"proposal_uid": plan["proposal_uid"], "plan_hash": plan["plan_hash"],
+                          "policy": "HOLD_PENDING_VERIFICATION"})
+    assert r.status_code == 409
+    assert "stale" in r.json()["detail"]["reason"].lower()
+
+    # NOTHING was applied anywhere in the plan:
+    db.expire_all()
+    r101 = db.scalar(select(models.FleetRoute).where(models.FleetRoute.route_id == "R-101"))
+    bus001 = db.scalar(select(models.FleetVehicle).where(models.FleetVehicle.asset_id == "SYNTHETIC-BUS-001"))
+    spare1 = db.scalar(select(models.FleetVehicle).where(models.FleetVehicle.asset_id == "SYNTHETIC-SPARE-01"))
+    assert r101.assigned_vehicle_id == bus001.id          # feasible reassignment NOT applied
+    assert bus001.availability == "ASSIGNED_TO_ROUTE"     # match bus NOT grounded
+    assert spare1.availability == "AVAILABLE"             # spare NOT consumed
+    assert bus004.availability == "ASSIGNED_TO_ROUTE"     # held bus NOT changed
+    proposal = db.scalar(select(models.RecoveryProposal).where(
+        models.RecoveryProposal.proposal_uid == plan["proposal_uid"]))
+    assert proposal.status == "PENDING"                   # still approvable after regeneration
+    # Rejection was audited:
+    events = list(db.scalars(select(models.AuditEvent)))
+    rejected = [e for e in events if e.action == "RECOVERY_PLAN_APPROVAL_REJECTED"]
+    assert rejected and rejected[0].actor == "fleet.manager"
+    assert "stale" in rejected[0].detail.lower()
+
+
+def test_stale_manager_review_route_rejects_approval_without_removing_anything(client, incident_id, db):
+    """Regression: NOT_APPLICABLE (manager-review-only) assignments must also
+    be re-validated against the live route state."""
+    h, plan = _make_pending_plan(client, incident_id, policy="MANAGER_REVIEW_ONLY")
+    flagged = [a for a in plan["assignments"] if a["status"] == "NOT_APPLICABLE"]
+    assert {a["route"]["route_id"] for a in flagged} == {"R-104", "R-105"}
+    # Concurrent change on a flagged route:
+    route = db.scalar(select(models.FleetRoute).where(models.FleetRoute.route_id == "R-105"))
+    route.assigned_vehicle_id = None
+    db.commit()
+
+    r = client.post(f"/api/incidents/{incident_id}/approve-plan", headers=h,
+                    json={"proposal_uid": plan["proposal_uid"], "plan_hash": plan["plan_hash"],
+                          "policy": "MANAGER_REVIEW_ONLY"})
+    assert r.status_code == 409
+    assert "stale" in r.json()["detail"]["reason"].lower()
+
+    # No operational change anywhere:
+    db.expire_all()
+    r101 = db.scalar(select(models.FleetRoute).where(models.FleetRoute.route_id == "R-101"))
+    r104 = db.scalar(select(models.FleetRoute).where(models.FleetRoute.route_id == "R-104"))
+    bus001 = db.scalar(select(models.FleetVehicle).where(models.FleetVehicle.asset_id == "SYNTHETIC-BUS-001"))
+    bus004 = db.scalar(select(models.FleetVehicle).where(models.FleetVehicle.asset_id == "SYNTHETIC-BUS-004"))
+    spare1 = db.scalar(select(models.FleetVehicle).where(models.FleetVehicle.asset_id == "SYNTHETIC-SPARE-01"))
+    assert r101.assigned_vehicle_id == bus001.id
+    assert spare1.availability == "AVAILABLE"
+    assert bus001.availability == "ASSIGNED_TO_ROUTE"
+    assert r104.assigned_vehicle_id == bus004.id
+    assert bus004.operational_status != "FLAGGED_FOR_MANAGER_REVIEW"  # flag not applied
+    events = list(db.scalars(select(models.AuditEvent)))
+    assert any(e.action == "RECOVERY_PLAN_APPROVAL_REJECTED" for e in events)
+
+
 def test_successful_approval_persists_state_and_audit(client, incident_id, db):
     h, plan = _make_pending_plan(client, incident_id)
     r = client.post(f"/api/incidents/{incident_id}/approve-plan", headers=h,

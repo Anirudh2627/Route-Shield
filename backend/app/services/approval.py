@@ -115,16 +115,27 @@ def apply_approval(db: Session, incident: models.Incident, actor: str, proposal_
     if not assignments:
         _reject(db, incident, actor, proposal_uid, "Proposal contains no assignments.")
 
-    # --- Availability re-check (state may have changed since generation) ----
+    # --- Stale-state + availability re-check (state may have changed since
+    # generation). EVERY assignment type is re-validated BEFORE anything is
+    # applied: feasible replacements, infeasible assignments without a
+    # replacement, and NOT_APPLICABLE manager-review-only assignments. Any
+    # mismatch rejects the whole approval and rolls back all changes.
     claimed: set[int] = set()
     for a in assignments:
+        route = db.get(models.FleetRoute, a.route_id)
+        if route is None or route.assigned_vehicle_id != a.original_vehicle_id:
+            _reject(
+                db, incident, actor, proposal_uid,
+                f"Route {route.route_id if route else a.route_id} no longer has the original "
+                "vehicle assigned; the plan is stale. Regenerate and review the plan again.",
+            )
         if a.status != "PROPOSED" or not a.feasible or a.replacement_vehicle_id is None:
             continue
         spare = db.get(models.FleetVehicle, a.replacement_vehicle_id)
         if spare is None or spare.role != "SPARE" or spare.availability != "AVAILABLE":
             _reject(
                 db, incident, actor, proposal_uid,
-                f"Replacement vehicle for route {a.route.route_id} is no longer available "
+                f"Replacement vehicle for route {route.route_id} is no longer available "
                 f"(expected an AVAILABLE spare).",
             )
         if spare.id in claimed:
@@ -133,13 +144,6 @@ def apply_approval(db: Session, incident: models.Incident, actor: str, proposal_
                 f"Replacement vehicle {spare.asset_id} would be double-assigned.",
             )
         claimed.add(spare.id)
-        route = db.get(models.FleetRoute, a.route_id)
-        if route is None or route.assigned_vehicle_id != a.original_vehicle_id:
-            _reject(
-                db, incident, actor, proposal_uid,
-                f"Route {route.route_id if route else a.route_id} no longer has the original "
-                "vehicle assigned; the plan is stale.",
-            )
 
     # --- Apply state changes ------------------------------------------------
     previous_state: dict = {"routes": [], "vehicles": []}

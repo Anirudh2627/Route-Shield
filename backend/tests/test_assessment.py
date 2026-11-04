@@ -81,6 +81,72 @@ def test_conflicting_attributes_abstain():
     assert any("conflicting configuration evidence" in x.lower() for x in r.reasons)
 
 
+# ---------------------------------------------------------------------------
+# Identity (make/model) evidence handling: incomplete identity abstains;
+# only positive conflicts exclude.
+# ---------------------------------------------------------------------------
+
+
+def test_missing_make_with_consistent_model_abstains():
+    r = classify_vehicle(_veh(make=None), CRIT)
+    assert r.classification == "VERIFICATION_REQUIRED"
+    assert any("make" in x and "not recorded" in x for x in r.reasons)
+    identity = next(c for c in r.evidence_detail if c["criterion_type"] == "MAKE_MODEL")
+    assert identity["result"] == "UNKNOWN"
+
+
+def test_missing_model_with_consistent_make_abstains():
+    r = classify_vehicle(_veh(model=None), CRIT)
+    assert r.classification == "VERIFICATION_REQUIRED"
+    assert any("model" in x and "not recorded" in x for x in r.reasons)
+    identity = next(c for c in r.evidence_detail if c["criterion_type"] == "MAKE_MODEL")
+    assert identity["result"] == "UNKNOWN"
+
+
+def test_missing_make_and_model_abstains():
+    r = classify_vehicle(_veh(make=None, model=None), CRIT)
+    assert r.classification == "VERIFICATION_REQUIRED"
+    assert any("make and model not recorded" in x for x in r.reasons)
+
+
+def test_explicit_make_and_model_mismatch_is_outside():
+    r = classify_vehicle(_veh(make="BLUE BIRD", model="VISION"), CRIT)
+    assert r.classification == "OUTSIDE_REPORT_VERSION"
+    assert any("positive evidence" in x for x in r.reasons)
+    identity = next(c for c in r.evidence_detail if c["criterion_type"] == "MAKE_MODEL")
+    assert identity["result"] == "FAILED"
+
+
+def test_missing_make_but_conflicting_model_is_outside():
+    """Incomplete identity may still exclude when the RECORDED field
+    positively conflicts (sufficient positive evidence)."""
+    r = classify_vehicle(_veh(make=None, model="VISION"), CRIT)
+    assert r.classification == "OUTSIDE_REPORT_VERSION"
+    assert any("recorded model 'VISION'" in x for x in r.reasons)
+
+
+def test_missing_model_but_conflicting_make_is_outside():
+    r = classify_vehicle(_veh(make="BLUE BIRD", model=None), CRIT)
+    assert r.classification == "OUTSIDE_REPORT_VERSION"
+    assert any("recorded make 'BLUE BIRD'" in x for x in r.reasons)
+
+
+@pytest.mark.parametrize("missing", [
+    {"make": None},
+    {"model": None},
+    {"make": None, "model": None},
+    {"make": ""},
+    {"model": ""},
+    {"make": "", "model": ""},
+])
+def test_incomplete_identity_is_never_classified_outside(missing):
+    """Regression: a missing make or model alone must NEVER produce
+    OUTSIDE_REPORT_VERSION - incomplete identity is abstention evidence."""
+    r = classify_vehicle(_veh(**missing), CRIT)
+    assert r.classification != "OUTSIDE_REPORT_VERSION"
+    assert r.classification == "VERIFICATION_REQUIRED"
+
+
 def test_narrative_without_code_abstains():
     r = classify_vehicle(_veh(brake_feature_code=None,
                               configuration={"note": "Hydraulic Brake per work order"}), CRIT)
