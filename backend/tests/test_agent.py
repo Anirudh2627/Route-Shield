@@ -851,6 +851,449 @@ def test_tool_execution_error_surfaced_not_crashing(db):
 
 
 # ---------------------------------------------------------------------------
+# P0 canonical-reference grounding (staging trace INV-7CADE61A643F)
+#
+# Regressions for the real Qwen failure on Vultr staging: the model cited
+# spare ASSET ids as evidence references and emitted composite route
+# description strings instead of exact route_id values.
+# ---------------------------------------------------------------------------
+
+
+def _spares_output(db, incident) -> dict:
+    return agent_tools.tool_get_available_spares(
+        db, agent_tools.IncidentArgs(incident_id=incident.id)
+    )
+
+
+def _impacted_rows(preview: dict) -> list[dict]:
+    return [r for pv in preview["previews"] for r in pv["impacted_routes"]]
+
+
+def test_ref_index_collects_nested_refs_and_restricts_route_source(db):
+    """The reference index must collect canonical evidence references from
+    bare-string 'evidence_refs' lists (previously invisible) AND restrict the
+    canonical ROUTE source to successful preview_route_impact outputs."""
+    incident = first_incident(db)
+    index = agent_svc.RefIndex()
+
+    spares = _spares_output(db, incident)
+    index.observe("get_available_spares", spares)
+    spare_refs = {s["ref"] for s in spares["spares"]}
+    spare_ids = {s["asset_id"] for s in spares["spares"]}
+    eligible_ids = {s["asset_id"] for s in spares["spares"] if s["eligible_as_replacement"]}
+    assert spare_refs and spare_refs == set(spares["evidence_refs"])
+    assert spare_refs <= index.refs       # per-object ref fields AND the bare list
+    assert spare_ids <= index.assets      # asset ids are identities, never refs
+    assert not (spare_ids & index.refs)
+    assert index.eligible_spares == eligible_ids
+
+    # A route id seen via get_vehicle_detail is citable evidence but is NOT a
+    # canonical route reference: only route-impact previews ground routes.
+    detail = agent_tools.tool_get_vehicle_detail(
+        db, agent_tools.VehicleDetailArgs(incident_id=incident.id, asset_id="SYNTHETIC-BUS-001")
+    )
+    index.observe("get_vehicle_detail", detail)
+    assigned = (detail.get("assigned_route") or {}).get("route_id")
+    assert assigned
+    assert assigned in index.refs
+    assert index.routes == set()
+
+    preview = agent_tools.tool_preview_route_impact(
+        db, agent_tools.RouteImpactArgs(incident_id=incident.id,
+                                        policy="HOLD_PENDING_VERIFICATION")
+    )
+    index.observe("preview_route_impact", preview)
+    preview_routes = {r["route_id"] for r in _impacted_rows(preview)}
+    assert preview_routes and preview_routes <= index.routes
+    # Engine classifications of assigned vehicles are recorded from route rows.
+    for r in _impacted_rows(preview):
+        if r["assigned_vehicle"] and r["assigned_vehicle_classification"]:
+            assert index.classifications[r["assigned_vehicle"]] == \
+                r["assigned_vehicle_classification"]
+
+
+def test_spare_evidence_ref_vs_asset_id_at_validator_level(db):
+    """ASSESS-n is the evidence reference for a spare; SYNTHETIC-SPARE-xx is
+    the asset identity. The validator must accept the former for citations and
+    reject the latter with type-aware, actionable feedback."""
+    incident = first_incident(db)
+    index = _canonical_index(db, incident)
+    spares = _spares_output(db, incident)
+    index.observe("get_available_spares", spares)
+    s0 = spares["spares"][0]
+
+    good = grounded_final_payload(db, incident)
+    good["facts"].append({
+        "statement": f"Spare {s0['asset_id']} is eligible as a replacement per the "
+                     "recovery engine.",
+        "evidence_refs": [s0["ref"]],        # ASSESS-n: canonical evidence reference
+    })
+    good["evidence_references"].append(
+        {"ref_id": s0["ref"], "description": "spare assessment record", "source": ""})
+    assert agent_svc.validate_grounding(
+        agent_svc.AgentFinalAssessment.model_validate(good), index) == []
+
+    bad = grounded_final_payload(db, incident)
+    bad["facts"].append({
+        "statement": f"Spare {s0['asset_id']} is eligible as a replacement per the "
+                     "recovery engine.",
+        "evidence_refs": [s0["asset_id"]],   # asset id cited as evidence
+    })
+    bad["evidence_references"].append(
+        {"ref_id": s0["asset_id"], "description": "spare vehicle", "source": ""})
+    violations = agent_svc.validate_grounding(
+        agent_svc.AgentFinalAssessment.model_validate(bad), index)
+    asset_v = next(v for v in violations if s0["asset_id"] in v)
+    assert "ASSET ID" in asset_v
+    assert "Available evidence refs" in asset_v
+    # The old feedback falsely claimed the id was "never returned by a tool";
+    # the new feedback must not repeat that mistake.
+    assert "was never returned by a tool" not in asset_v
+
+
+def test_spare_asset_id_accepted_as_asset_identifier(db):
+    """Where the schema expects an asset id (recovery_candidates[].spare_asset_id)
+    the spare ASSET id is correct and accepted end to end."""
+    incident = first_incident(db)
+    spares = _spares_output(db, incident)
+    eligible = next(s for s in spares["spares"] if s["eligible_as_replacement"])
+    payload = grounded_final_payload(db, incident)
+    payload["recovery_candidates"].append({
+        "route_id": payload["affected_routes"][0],
+        "spare_asset_id": eligible["asset_id"],
+        "feasibility_note": f"Spare {eligible['asset_id']} is eligible per the recovery engine.",
+    })
+    payload["evidence_references"].append(
+        {"ref_id": eligible["ref"], "description": "spare assessment record", "source": ""})
+    script = [
+        {"tool": "get_recall_evidence", "args": {"incident_id": incident.id}},
+        {"tool": "get_fleet_assessment", "args": {"incident_id": incident.id}},
+        {"tool": "preview_route_impact",
+         "args": {"incident_id": incident.id, "policy": "HOLD_PENDING_VERIFICATION"}},
+        {"tool": "get_available_spares", "args": {"incident_id": incident.id}},
+        {"final": payload},
+    ]
+    session = agent_svc.run_investigation(
+        db, incident_id=incident.id, objective="Spare asset id as asset identifier.",
+        requested_by="fleet.manager", provider=agent_svc.StubChatProvider(script),
+    )
+    assert session.status == "COMPLETED"
+    assert session.stop_reason == "MODEL_STOPPED"
+    candidates = session.final_result["recovery_candidates"]
+    assert any(c["spare_asset_id"] == eligible["asset_id"] for c in candidates)
+    # ... and no evidence citation anywhere is an asset id (distinction kept).
+    cited = [r for f in session.final_result["facts"] for r in f["evidence_refs"]]
+    cited += [r["ref_id"] for r in session.final_result["evidence_references"]]
+    assert cited and not any(r.startswith("SYNTHETIC-") for r in cited)
+
+
+def test_spare_asset_id_as_evidence_reference_rejected_in_loop(db):
+    """The exact INV-7CADE61A643F failure mode A: citing SYNTHETIC-SPARE-xx as
+    an evidence reference is rejected with actionable feedback; after the
+    retry budget the investigation fails honestly."""
+    incident = first_incident(db)
+    s0 = _spares_output(db, incident)["spares"][0]
+    bad = grounded_final_payload(db, incident)
+    bad["facts"].append({
+        "statement": f"Spare {s0['asset_id']} is eligible as a replacement for the "
+                     "disrupted routes.",
+        "evidence_refs": [s0["asset_id"]],
+    })
+    bad["evidence_references"].append(
+        {"ref_id": s0["asset_id"], "description": "spare vehicle", "source": ""})
+    script = [
+        {"tool": "get_recall_evidence", "args": {"incident_id": incident.id}},
+        {"tool": "get_fleet_assessment", "args": {"incident_id": incident.id}},
+        {"tool": "preview_route_impact",
+         "args": {"incident_id": incident.id, "policy": "HOLD_PENDING_VERIFICATION"}},
+        {"tool": "get_available_spares", "args": {"incident_id": incident.id}},
+        {"final": bad},
+        {"final": bad},
+    ]
+    session = agent_svc.run_investigation(
+        db, incident_id=incident.id, objective="Spare asset id as evidence.",
+        requested_by="fleet.manager", provider=agent_svc.StubChatProvider(script),
+    )
+    assert session.status == "FAILED"
+    assert session.stop_reason == "GROUNDING_VALIDATION_FAILED"
+    assert session.final_result is None
+    violations = session.grounding_violations
+    assert any(s0["asset_id"] in v and "ASSET ID" in v for v in violations)
+    assert any(s0["ref"] in v for v in violations)  # feedback lists canonical refs
+    steps = [s for s in session.steps if s.kind == "VALIDATION"]
+    assert [s.result["attempt"] for s in steps] == [1, 2]
+
+
+def test_composite_route_description_rejected_in_loop(db):
+    """The exact INV-7CADE61A643F failure mode B: a composite route description
+    in affected_routes is rejected, and the feedback names the contained
+    canonical route id(s) and the exact route_id values available."""
+    incident = first_incident(db)
+    preview = agent_tools.tool_preview_route_impact(
+        db, agent_tools.RouteImpactArgs(incident_id=incident.id,
+                                        policy="HOLD_PENDING_VERIFICATION")
+    )
+    rows = _impacted_rows(preview)
+    assert rows
+    r0 = rows[0]
+    composite = (f"{r0['route_id']} {r0['name']} (DISRUPTED under both policies; assigned "
+                 f"{r0['assigned_vehicle']}, {r0['assigned_vehicle_classification']})")
+    bad = grounded_final_payload(db, incident)
+    bad["affected_routes"] = [composite]
+    script = [
+        {"tool": "get_recall_evidence", "args": {"incident_id": incident.id}},
+        {"tool": "get_fleet_assessment", "args": {"incident_id": incident.id}},
+        {"tool": "preview_route_impact",
+         "args": {"incident_id": incident.id, "policy": "HOLD_PENDING_VERIFICATION"}},
+        {"final": bad},
+        {"final": bad},
+    ]
+    session = agent_svc.run_investigation(
+        db, incident_id=incident.id, objective="Composite route id.",
+        requested_by="fleet.manager", provider=agent_svc.StubChatProvider(script),
+    )
+    assert session.status == "FAILED"
+    assert session.stop_reason == "GROUNDING_VALIDATION_FAILED"
+    assert session.final_result is None
+    violations = session.grounding_violations
+    target = next(v for v in violations if v.startswith("affected_routes[0]"))
+    assert composite in target
+    assert "composite description containing route id(s)" in target
+    assert r0["route_id"] in target                 # the exact id it should have used
+    assert "Exact route_ids returned by preview_route_impact" in target
+
+
+def test_route_id_grounding_requires_successful_route_impact(db, monkeypatch):
+    """Route references are grounded ONLY by successful preview_route_impact
+    outputs: a route id seen via another tool, or from a FAILED preview call,
+    must be rejected."""
+    incident = first_incident(db)
+    route = db.query(models.FleetRoute).filter(
+        models.FleetRoute.assigned_vehicle_id.isnot(None)).first()
+    vehicle = db.get(models.FleetVehicle, route.assigned_vehicle_id)
+
+    # (a) route id observed only via get_vehicle_detail -> not canonical
+    bad = grounded_final_payload(db, incident)
+    bad["affected_routes"] = [route.route_id]
+    script = [
+        {"tool": "get_vehicle_detail",
+         "args": {"incident_id": incident.id, "asset_id": vehicle.asset_id}},
+        {"final": bad},
+        {"final": bad},
+    ]
+    session = agent_svc.run_investigation(
+        db, incident_id=incident.id, objective="Route from wrong tool.",
+        requested_by="fleet.manager", provider=agent_svc.StubChatProvider(script),
+    )
+    assert session.status == "FAILED"
+    assert session.stop_reason == "GROUNDING_VALIDATION_FAILED"
+    target = next(v for v in session.grounding_violations
+                  if v.startswith("affected_routes[0]"))
+    assert route.route_id in target and "preview_route_impact" in target
+
+    # (b) a FAILED preview grounds nothing
+    orig = agent_tools.REGISTRY["preview_route_impact"]
+
+    def broken(tool_db, args):
+        raise agent_tools.ToolExecutionError("preview service unavailable")
+
+    monkeypatch.setitem(
+        agent_tools.REGISTRY, "preview_route_impact", replace(orig, handler=broken))
+    bad2 = grounded_final_payload(db, incident)
+    script2 = [
+        {"tool": "preview_route_impact", "args": {"incident_id": incident.id}},
+        {"final": bad2},
+        {"final": bad2},
+    ]
+    session2 = agent_svc.run_investigation(
+        db, incident_id=incident.id, objective="Route from failed preview.",
+        requested_by="fleet.manager", provider=agent_svc.StubChatProvider(script2),
+    )
+    assert session2.status == "FAILED"
+    assert session2.stop_reason == "GROUNDING_VALIDATION_FAILED"
+    steps = [s for s in session2.steps if s.kind == "TOOL_CALL"]
+    assert steps[0].status == "TOOL_ERROR"
+    target2 = next(v for v in session2.grounding_violations
+                   if v.startswith("affected_routes[0]"))
+    assert "no route objects were returned by a successful preview_route_impact" in target2
+
+
+def test_route_ids_accepted_and_policies_kept_distinct(db):
+    """Exact route_id values from a BOTH-policy preview are accepted, and the
+    two operational policies plus the engine's distinct classifications are
+    preserved verbatim in the accepted assessment."""
+    incident = first_incident(db)
+    preview = agent_tools.tool_preview_route_impact(
+        db, agent_tools.RouteImpactArgs(incident_id=incident.id))
+    policies = {pv["policy"] for pv in preview["previews"]}
+    assert policies == {"HOLD_PENDING_VERIFICATION", "MANAGER_REVIEW_ONLY"}
+    rows = _impacted_rows(preview)
+    exact_routes = list(dict.fromkeys(r["route_id"] for r in rows))
+
+    assess = agent_tools.tool_get_fleet_assessment(
+        db, agent_tools.IncidentArgs(incident_id=incident.id))
+    engine = {v["asset_id"]: v["classification"] for v in assess["vehicles"]}
+    ref_by_asset = {v["asset_id"]: v["ref"] for v in assess["vehicles"]}
+    picks: dict[str, str] = {}
+    for asset, cls in engine.items():
+        picks.setdefault(cls, asset)
+    assert len(picks) >= 1
+
+    payload = grounded_final_payload(db, incident)
+    payload["affected_routes"] = exact_routes
+    payload["vehicle_classifications"] = [
+        {"asset_id": asset, "classification": cls, "basis_ref": ref_by_asset[asset]}
+        for cls, asset in picks.items()
+    ]
+    for pv in preview["previews"]:
+        impacted = [r["route_id"] for r in pv["impacted_routes"]]
+        payload["facts"].append({
+            "statement": f"Under {pv['policy']}, {len(impacted)} routes were reviewed: "
+                         f"{', '.join(impacted)}.",
+            "evidence_refs": impacted[:4],
+        })
+    script = [
+        {"tool": "get_recall_evidence", "args": {"incident_id": incident.id}},
+        {"tool": "get_fleet_assessment", "args": {"incident_id": incident.id}},
+        {"tool": "preview_route_impact", "args": {"incident_id": incident.id}},
+        {"final": payload},
+    ]
+    session = agent_svc.run_investigation(
+        db, incident_id=incident.id, objective="Both policies, exact route ids.",
+        requested_by="fleet.manager", provider=agent_svc.StubChatProvider(script),
+    )
+    assert session.status == "COMPLETED"
+    assert session.stop_reason == "MODEL_STOPPED"
+    result = session.final_result
+    assert result["affected_routes"] == exact_routes
+    assert all(r == r.strip() and r.startswith("R-") for r in result["affected_routes"])
+    claims = {c["asset_id"]: c["classification"] for c in result["vehicle_classifications"]}
+    assert claims == {asset: cls for cls, asset in picks.items()}   # engine values, distinct
+    assert set(claims.values()) == set(picks.keys())
+    fact_text = " ".join(f["statement"] for f in result["facts"])
+    assert "HOLD_PENDING_VERIFICATION" in fact_text and "MANAGER_REVIEW_ONLY" in fact_text
+
+
+def test_fabricated_spare_and_route_references_rejected(db):
+    """Fabricated spare and route references remain rejected - the new
+    type-aware feedback must not loosen any acceptance rule."""
+    incident = first_incident(db)
+    bad = grounded_final_payload(db, incident)
+    bad["affected_routes"] = bad["affected_routes"] + ["R-999"]
+    bad["recovery_candidates"].append({
+        "route_id": "R-999",
+        "spare_asset_id": "SYNTHETIC-SPARE-99",
+        "feasibility_note": "invented",
+    })
+    script = [
+        {"tool": "get_recall_evidence", "args": {"incident_id": incident.id}},
+        {"tool": "get_fleet_assessment", "args": {"incident_id": incident.id}},
+        {"tool": "preview_route_impact",
+         "args": {"incident_id": incident.id, "policy": "HOLD_PENDING_VERIFICATION"}},
+        {"tool": "get_available_spares", "args": {"incident_id": incident.id}},
+        {"final": bad},
+        {"final": bad},
+    ]
+    session = agent_svc.run_investigation(
+        db, incident_id=incident.id, objective="Fabricated ids.",
+        requested_by="fleet.manager", provider=agent_svc.StubChatProvider(script),
+    )
+    assert session.status == "FAILED"
+    assert session.stop_reason == "GROUNDING_VALIDATION_FAILED"
+    assert session.final_result is None
+    violations = session.grounding_violations
+    assert any("R-999" in v for v in violations)
+    assert any("SYNTHETIC-SPARE-99" in v for v in violations)
+
+
+def test_trace_inv_7cade61a643f_reproduced_and_corrected(db):
+    """End-to-end mocked-provider reproduction of staging trace INV-7CADE61A643F
+    (Qwen on Vultr): draft final cites spare asset ids as evidence and emits
+    composite route strings -> grounding rejects once with type-aware feedback;
+    the corrected canonical assessment is then accepted."""
+    incident = first_incident(db)
+    preview = agent_tools.tool_preview_route_impact(
+        db, agent_tools.RouteImpactArgs(incident_id=incident.id))  # both policies, as in the trace
+    rows = _impacted_rows(preview)
+    spares = _spares_output(db, incident)
+    s0 = spares["spares"][0]
+
+    # Draft with BOTH failure modes exactly as observed in the trace.
+    draft = grounded_final_payload(db, incident)
+    draft["facts"].append({
+        "statement": f"Replacement spares identified: {s0['asset_id']} is eligible as a "
+                     "replacement for the disrupted routes.",
+        "evidence_refs": [s0["asset_id"]],                       # failure mode A
+    })
+    draft["evidence_references"].append(
+        {"ref_id": s0["asset_id"], "description": "spare vehicle", "source": ""})
+    draft["affected_routes"] = [
+        f"{r['route_id']} {r['name']} (DISRUPTED under both policies; assigned "
+        f"{r['assigned_vehicle']}, {r['assigned_vehicle_classification']})"
+        for r in rows[:3]
+    ]                                                            # failure mode B
+
+    # Corrected assessment: canonical refs, exact route ids, per-policy facts.
+    good = grounded_final_payload(db, incident)
+    good["facts"].append({
+        "statement": f"Spare {s0['asset_id']} (assessment record {s0['ref']}) is "
+        f"{'eligible' if s0['eligible_as_replacement'] else 'not eligible'} as a replacement.",
+        "evidence_refs": [s0["ref"]],
+    })
+    for pv in preview["previews"]:
+        impacted = [r["route_id"] for r in pv["impacted_routes"]]
+        good["facts"].append({
+            "statement": f"Under {pv['policy']}, {len(impacted)} routes were reviewed: "
+                         f"{', '.join(impacted)}.",
+            "evidence_refs": impacted[:4],
+        })
+    good["evidence_references"].append(
+        {"ref_id": s0["ref"], "description": "spare assessment record", "source": ""})
+    good["affected_routes"] = list(dict.fromkeys(r["route_id"] for r in rows))
+
+    script = [
+        {"tool": "get_recall_evidence", "args": {"incident_id": incident.id}},
+        {"tool": "get_fleet_assessment", "args": {"incident_id": incident.id}},
+        {"tool": "preview_route_impact", "args": {"incident_id": incident.id}},
+        {"tool": "get_available_spares", "args": {"incident_id": incident.id}},
+        {"final": draft},
+        {"final": good},
+    ]
+    session = agent_svc.run_investigation(
+        db, incident_id=incident.id, objective="Assess recall exposure and route impact.",
+        requested_by="fleet.manager", provider=agent_svc.StubChatProvider(script),
+    )
+    assert session.status == "COMPLETED"
+    assert session.stop_reason == "MODEL_STOPPED"
+    assert agent_svc.StubChatProvider.TEST_LABEL in session.model  # never real inference
+    assert session.tool_calls_count == 4
+    assert session.iterations_used == 6
+
+    # The rejected draft is persisted with its full violation set and retry metadata.
+    gsteps = [s for s in session.steps if s.kind == "VALIDATION"
+              and s.status == agent_svc.STOP_GROUNDING_FAILED]
+    assert len(gsteps) == 1
+    rejected = gsteps[0].result["violations"]
+    assert gsteps[0].result["attempt"] == 1
+    assert gsteps[0].result["model_round"] == 5
+    assert any(s0["asset_id"] in v and "ASSET ID" in v for v in rejected)
+    assert any("composite description containing route id(s)" in v for v in rejected)
+
+    # The accepted result is fully canonical.
+    result = session.final_result
+    assert result["affected_routes"] == list(dict.fromkeys(r["route_id"] for r in rows))
+    cited = [r for f in result["facts"] for r in f["evidence_refs"]]
+    cited += [r["ref_id"] for r in result["evidence_references"]]
+    cited += [c["basis_ref"] for c in result["vehicle_classifications"] if c["basis_ref"]]
+    assert cited and not any(r.startswith("SYNTHETIC-") for r in cited)
+    assert s0["ref"] in cited
+    fact_text = " ".join(f["statement"] for f in result["facts"])
+    assert "HOLD_PENDING_VERIFICATION" in fact_text and "MANAGER_REVIEW_ONLY" in fact_text
+    final_step = next(s for s in session.steps if s.kind == "FINAL")
+    assert final_step.status == "OK"
+
+
+# ---------------------------------------------------------------------------
 # HTTP endpoints
 # ---------------------------------------------------------------------------
 

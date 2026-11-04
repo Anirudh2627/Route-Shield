@@ -462,7 +462,10 @@ CLASSIFICATION_VALUES = ("CAMPAIGN_CRITERIA_MATCH", "VERIFICATION_REQUIRED", "OU
 class AgentEvidenceRef(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ref_id: str = Field(min_length=1, max_length=128,
-                        description="Reference id exactly as returned by a tool (e.g. CRIT-12, ASSESS-3, DOC-<sha16>).")
+                        description="Evidence reference id exactly as returned by a tool "
+                                    "(e.g. CRIT-12, ASSESS-3, VERIF-7, DOC-<sha16>, PROP-...). "
+                                    "Never an asset id (SYNTHETIC-...) - asset ids are not "
+                                    "evidence references.")
     description: str = Field(default="", max_length=512)
     source: str = Field(default="", max_length=1024)
 
@@ -470,7 +473,10 @@ class AgentEvidenceRef(BaseModel):
 class AgentFact(BaseModel):
     model_config = ConfigDict(extra="forbid")
     statement: str = Field(min_length=1, max_length=1000)
-    evidence_refs: list[str] = Field(default_factory=list, max_length=20)
+    evidence_refs: list[str] = Field(
+        default_factory=list, max_length=20,
+        description="Evidence reference ids exactly as tools returned them (e.g. CRIT-12, "
+                    "ASSESS-13, VERIF-7). Never asset ids (SYNTHETIC-...) or route ids.")
 
 
 class AgentInference(BaseModel):
@@ -488,15 +494,23 @@ class AgentRecommendation(BaseModel):
 
 class AgentClassificationClaim(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    asset_id: str = Field(min_length=1, max_length=64)
+    asset_id: str = Field(min_length=1, max_length=64,
+                          description="Fleet asset id exactly as returned by a tool "
+                                      "(e.g. SYNTHETIC-BUS-001).")
     classification: Classification
     basis_ref: str = Field(default="", max_length=128)
 
 
 class AgentRecoveryCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    route_id: str = Field(min_length=1, max_length=64)
-    spare_asset_id: Optional[str] = Field(default=None, max_length=64)
+    route_id: str = Field(min_length=1, max_length=64,
+                          description="Exact route_id value from a preview_route_impact route "
+                                      "object (e.g. R-101) - never a route name or a composite "
+                                      "description.")
+    spare_asset_id: Optional[str] = Field(default=None, max_length=64,
+                                          description="Fleet asset id of an eligible spare "
+                                                      "(e.g. SYNTHETIC-SPARE-02), exactly as a "
+                                                      "tool returned it.")
     feasibility_note: str = Field(default="", max_length=500)
 
 
@@ -510,7 +524,12 @@ class AgentFinalAssessment(BaseModel):
     facts: list[AgentFact] = Field(default_factory=list, max_length=40)
     inferences: list[AgentInference] = Field(default_factory=list, max_length=40)
     vehicle_classifications: list[AgentClassificationClaim] = Field(default_factory=list, max_length=100)
-    affected_routes: list[str] = Field(default_factory=list, max_length=100)
+    affected_routes: list[str] = Field(
+        default_factory=list, max_length=100,
+        description="Exact route_id values ONLY (e.g. R-101), as returned by successful "
+                    "preview_route_impact calls. Never route names, and never composite "
+                    "strings that merely contain a route id - descriptions belong in "
+                    "facts/inferences.")
     recovery_candidates: list[AgentRecoveryCandidate] = Field(default_factory=list, max_length=100)
     unresolved_constraints: list[str] = Field(default_factory=list, max_length=40)
     unknowns_and_missing_evidence: list[str] = Field(default_factory=list, max_length=40)

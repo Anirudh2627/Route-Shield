@@ -283,7 +283,7 @@ are computed by a deterministic rule engine. Report them EXACTLY as the tools re
 re-derive, override or reinterpret them.
 * Never invent asset ids, route ids, evidence references, numbers or recall facts. Every factual \
 statement in the final output must cite evidence reference ids that appeared verbatim in tool \
-results (e.g. CRIT-12, ASSESS-3, DOC-<sha16>, VERIF-7, R-101, PROP-...).
+results (e.g. CRIT-12, ASSESS-3, DOC-<sha16>, VERIF-7, PROP-...).
 * Absence of evidence is not evidence of safety. If evidence is missing or ambiguous, say so in \
 "unknowns_and_missing_evidence" instead of concluding.
 * All fleet data is SYNTHETIC DEMONSTRATION DATA. Surface the evidence banner / provenance the \
@@ -296,6 +296,24 @@ confirmation of an open recall.
 abstains. Absence of evidence is not evidence of safety.
 * OUTSIDE_REPORT_VERSION: Outside this report version's applicability criteria. This does NOT \
 mean the vehicle is SAFE.
+
+IDENTIFIER TYPES (never mix them - mixing them fails grounding validation):
+* asset_id (e.g. SYNTHETIC-BUS-001, SYNTHETIC-SPARE-01) identifies a fleet VEHICLE. Use it ONLY \
+where the schema expects an asset id: vehicle_classifications[].asset_id and \
+recovery_candidates[].spare_asset_id. An asset_id is NEVER an evidence reference, even when the \
+same tool object also contains a ref.
+* evidence reference (the fields tools name "ref" or "evidence_refs", e.g. CRIT-12, ASSESS-13, \
+VERIF-7, DOC-<sha16>, PROP-...) is the citation id of a record. Use it in facts[].evidence_refs, \
+evidence_references[].ref_id and vehicle_classifications[].basis_ref. When a spare or vehicle \
+object shows BOTH an asset_id and a ref, cite the REF as evidence and use the asset_id only to \
+name the vehicle itself.
+* route_id (e.g. R-101) is the EXACT route identifier from the structured route objects of \
+preview_route_impact. affected_routes[] and recovery_candidates[].route_id must contain ONLY \
+exact route_id values like "R-101". Never put route names or composite strings such as "R-101 \
+Northside Elementary Run (DISRUPTED...)" into identifier fields; route names, impacts and \
+policy discussions belong in facts/inferences instead.
+* The two operational policies are distinct - HOLD_PENDING_VERIFICATION and \
+MANAGER_REVIEW_ONLY. Report per-policy outcomes separately; never merge them into one claim.
 
 TOOLS (read-only, {len(tool_defs)} available):
 {tools}
@@ -311,7 +329,9 @@ markdown fences, no extra keys:
 {schema}
 
 Every fact must cite at least one evidence ref that a tool actually returned. Every proposed action \
-requires_human_approval=true (the schema enforces it)."""
+requires_human_approval=true (the schema enforces it). affected_routes must contain only exact \
+route_id values (e.g. R-101) returned by preview_route_impact - never route names or composite \
+strings."""
 
 
 _JSON_PROTOCOL_INSTRUCTIONS = """TOOL PROTOCOL (strict JSON mode - this endpoint does not support native function calling):
@@ -436,9 +456,32 @@ class StubChatProvider:
 # ---------------------------------------------------------------------------
 
 
+ROUTE_IMPACT_TOOL = "preview_route_impact"
+
+
 @dataclass
 class RefIndex:
-    """Everything the model observed in real tool results this session."""
+    """Everything the model observed in real tool results this session.
+
+    refs:
+        Canonical EVIDENCE-reference ids returned by tools (CRIT-n, ASSESS-n,
+        VERIF-n, DOC-<sha16>, proposal uids, route ids). Collected from
+        "ref"/"proposal_uid"/"basis_ref" values AND from bare-string
+        "evidence_refs" lists (pattern-guarded, so URLs never count).
+    assets:
+        Fleet asset ids (vehicle identities, e.g. SYNTHETIC-BUS-001).
+    routes:
+        Canonical route ids observed in SUCCESSFUL preview_route_impact route
+        objects ONLY - the structured route-impact source of truth for
+        affected_routes / recovery candidates. A route id seen elsewhere (e.g.
+        a vehicle's assigned route in get_vehicle_detail) is NOT sufficient
+        grounding for a route reference.
+    classifications:
+        asset_id -> deterministic engine classification (from fleet assessment
+        rows and from route-impact rows' assigned_vehicle_classification).
+    eligible_spares:
+        Spares the deterministic engine marked eligible/feasible.
+    """
 
     refs: set[str] = field(default_factory=set)
     assets: set[str] = field(default_factory=set)
@@ -449,13 +492,20 @@ class RefIndex:
 
     def observe(self, tool_name: str, result: dict) -> None:
         self.tools_used.add(tool_name)
-        self._walk(result)
+        self._walk(result, key=None, route_source=(tool_name == ROUTE_IMPACT_TOOL))
 
-    def _walk(self, node) -> None:
+    def _walk(self, node, key: str | None = None, *, route_source: bool) -> None:
         if isinstance(node, dict):
             asset_id = node.get("asset_id")
             if isinstance(asset_id, str) and isinstance(node.get("classification"), str):
                 self.classifications[asset_id] = node["classification"]
+            assigned = node.get("assigned_vehicle")
+            if isinstance(assigned, str) and isinstance(
+                node.get("assigned_vehicle_classification"), str
+            ):
+                # Route-impact rows carry the engine classification of the
+                # assigned vehicle - engine-authoritative, same as above.
+                self.classifications[assigned] = node["assigned_vehicle_classification"]
             spare = node.get("spare_asset_id")
             if isinstance(spare, str) and (
                 node.get("feasible") is True
@@ -465,44 +515,108 @@ class RefIndex:
             if node.get("eligible_as_replacement") is True and isinstance(asset_id, str):
                 self.eligible_spares.add(asset_id)
             for k, v in node.items():
-                self._observe_scalar(k, v)
-                self._walk(v)
+                self._observe_scalar(k, v, route_source=route_source)
+                self._walk(v, key=k, route_source=route_source)
         elif isinstance(node, list):
             for item in node:
-                self._walk(item)
+                if isinstance(item, str):
+                    self._observe_list_scalar(key, item)
+                else:
+                    self._walk(item, key=key, route_source=route_source)
 
-    def _observe_scalar(self, key: str, value) -> None:
+    def _observe_scalar(self, key: str, value, *, route_source: bool) -> None:
         if not isinstance(value, str):
             return
         if key in ("ref", "proposal_uid", "basis_ref") or any(p.match(value) for p in _REF_PATTERNS):
             self.refs.add(value)
         if key in ("asset_id", "spare_asset_id", "assigned_vehicle", "original_vehicle"):
             self.assets.add(value)
-        if key == "route_id":
+        if key == "route_id" and route_source:
             self.routes.add(value)
+
+    def _observe_list_scalar(self, key: str | None, item: str) -> None:
+        """Bare strings inside tool-output lists (previously invisible).
+
+        "evidence_refs" entries are indexed only when they match a canonical
+        evidence-reference shape, so URLs/free text never become citations.
+        "eligible_spare_pool" is the recovery engine's authoritative eligible
+        pool from preview_route_impact.
+        """
+        if key == "evidence_refs" and any(p.match(item) for p in _REF_PATTERNS):
+            self.refs.add(item)
+        elif key == "eligible_spare_pool":
+            self.eligible_spares.add(item)
+
+
+def _available(ids, limit: int = 12) -> str:
+    """Bounded, model-actionable listing of the canonical ids of one type."""
+    ordered = sorted(ids)
+    if not ordered:
+        return "(none were returned by tools this session)"
+    text = ", ".join(ordered[:limit])
+    if len(ordered) > limit:
+        text += f" (+{len(ordered) - limit} more)"
+    return text
+
+
+def _route_feedback(candidate: str, index: RefIndex) -> str:
+    """Actionable, deterministic detail for a rejected route reference."""
+    if not index.routes:
+        return (
+            "no route objects were returned by a successful preview_route_impact call this "
+            "session - call it successfully before citing routes"
+        )
+    containing = [r for r in sorted(index.routes) if r != candidate and r in candidate]
+    if containing:
+        return (
+            f"this is a composite description containing route id(s) {', '.join(containing)} - "
+            "identifier fields must hold EXACTLY the route_id value; put names, impacts and "
+            "policy discussion in facts/inferences instead. Exact route_ids returned by "
+            f"preview_route_impact: {_available(index.routes)}"
+        )
+    return f"exact route_ids returned by preview_route_impact: {_available(index.routes)}"
 
 
 def validate_grounding(final: AgentFinalAssessment, index: RefIndex) -> list[str]:
     """Deterministic grounding check against observed tool outputs.
 
-    Returns a list of violations; empty list == grounded.
+    Returns a list of violations; empty list == grounded. Every violation is
+    model-actionable: it names the expected identifier TYPE and the canonical
+    ids of that type the tools actually returned, so a bounded retry can fix
+    the citation instead of guessing.
     """
     violations: list[str] = []
+
+    def _evidence_ref_violation(where: str, ref: str) -> str:
+        if ref in index.assets:
+            return (
+                f"{where}: evidence ref '{ref}' is an ASSET ID, not an evidence reference - "
+                "cite the evidence ref the tool returned for the record (see the ref/"
+                f"evidence_refs fields next to it). Available evidence refs: {_available(index.refs)}"
+            )
+        if ref in index.routes:
+            return (
+                f"{where}: evidence ref '{ref}' is a ROUTE ID, not an evidence reference - "
+                f"cite the evidence ref the tool returned for this statement. "
+                f"Available evidence refs: {_available(index.refs)}"
+            )
+        return (
+            f"{where}: evidence ref '{ref}' was never returned by a tool. "
+            f"Available evidence refs: {_available(index.refs)}"
+        )
 
     for i, fact in enumerate(final.facts):
         if not fact.evidence_refs:
             violations.append(f"facts[{i}]: no evidence_refs cited")
         for ref in fact.evidence_refs:
             if ref not in index.refs:
-                violations.append(
-                    f"facts[{i}]: evidence ref '{ref}' was never returned by a tool"
-                )
+                violations.append(_evidence_ref_violation(f"facts[{i}]", ref))
 
     for i, claim in enumerate(final.vehicle_classifications):
         if claim.asset_id not in index.assets:
             violations.append(
                 f"vehicle_classifications[{i}]: asset '{claim.asset_id}' never appeared in a "
-                "tool result"
+                f"tool result. Assets observed this session: {_available(index.assets)}"
             )
         elif claim.asset_id in index.classifications and (
             index.classifications[claim.asset_id] != claim.classification
@@ -517,38 +631,39 @@ def validate_grounding(final: AgentFinalAssessment, index: RefIndex) -> list[str
         if claim.basis_ref and claim.basis_ref not in index.refs:
             violations.append(
                 f"vehicle_classifications[{i}]: basis_ref '{claim.basis_ref}' was never "
-                "returned by a tool"
+                f"returned by a tool. Available evidence refs: {_available(index.refs)}"
             )
 
     for i, route_id in enumerate(final.affected_routes):
         if route_id not in index.routes:
             violations.append(
-                f"affected_routes[{i}]: route '{route_id}' never appeared in a tool result"
+                f"affected_routes[{i}]: '{route_id}' is not a canonical route_id returned by a "
+                f"successful preview_route_impact call - {_route_feedback(route_id, index)}"
             )
 
     for i, cand in enumerate(final.recovery_candidates):
         if cand.route_id not in index.routes:
             violations.append(
-                f"recovery_candidates[{i}]: route '{cand.route_id}' never appeared in a tool "
-                "result"
+                f"recovery_candidates[{i}]: '{cand.route_id}' is not a canonical route_id "
+                f"returned by a successful preview_route_impact call - "
+                f"{_route_feedback(cand.route_id, index)}"
             )
         if cand.spare_asset_id:
             if cand.spare_asset_id not in index.assets:
                 violations.append(
                     f"recovery_candidates[{i}]: spare '{cand.spare_asset_id}' never appeared in "
-                    "a tool result"
+                    f"a tool result. Assets observed this session: {_available(index.assets)}"
                 )
             elif cand.spare_asset_id not in index.eligible_spares:
                 violations.append(
                     f"recovery_candidates[{i}]: spare '{cand.spare_asset_id}' was never shown as "
-                    "an eligible/feasible replacement by a tool"
+                    "an eligible/feasible replacement by a tool. Eligible spares observed: "
+                    f"{_available(index.eligible_spares)}"
                 )
 
     for i, ref in enumerate(final.evidence_references):
         if ref.ref_id not in index.refs:
-            violations.append(
-                f"evidence_references[{i}]: ref '{ref.ref_id}' was never returned by a tool"
-            )
+            violations.append(_evidence_ref_violation(f"evidence_references[{i}]", ref.ref_id))
 
     return violations
 
@@ -1030,28 +1145,32 @@ class InvestigationRunner:
                 if grounding_retries >= MAX_FINAL_RETRIES:
                     stop_reason = STOP_GROUNDING_FAILED
                     break
-                # Actionable hint: show the model which canonical ids tools
-                # actually returned so the bounded retry can cite real ones.
-                unknown_ref_violations = [
-                    v for v in violations
-                    if "was never returned by a tool" in v or "never appeared" in v
-                ]
-                hint = ""
-                if unknown_ref_violations:
-                    sample = sorted(self.index.refs)[:10]
-                    hint = (
-                        "\nCanonical ids actually observed from tool outputs this session "
-                        "(sample): " + (", ".join(sample) if sample else "(none)")
-                    )
+                # Actionable feedback: every violation above already names the
+                # expected identifier type and lists the canonical ids of that
+                # type; restate the full canonical inventory by type so the
+                # bounded retry can cite real ids instead of guessing.
+                canonical = (
+                    "\n\nCanonical identifiers actually returned by tools this session:\n"
+                    f"- evidence refs (for facts[].evidence_refs / evidence_references[].ref_id "
+                    f"/ basis_ref): {_available(self.index.refs)}\n"
+                    f"- asset ids (for vehicle_classifications[].asset_id / "
+                    f"recovery_candidates[].spare_asset_id): {_available(self.index.assets)}\n"
+                    f"- route ids (for affected_routes / recovery_candidates[].route_id): "
+                    f"{_available(self.index.routes)}\n"
+                    f"- eligible spares: {_available(self.index.eligible_spares)}\n"
+                    "Identifier fields must contain EXACT ids of the right type: an asset_id is "
+                    "never an evidence reference, and route ids are exact values like R-101 - "
+                    "never route names or composite strings."
+                )
                 conversation.assistant(content[:2000])
                 conversation.user(
                     "Your final assessment was REJECTED by the deterministic grounding validator. "
                     "Ungrounded claims are never shown to users. Violations:\n- "
                     + "\n- ".join(violations)
-                    + hint
-                    + "\nRe-emit the final assessment citing ONLY reference ids that tools "
-                    "actually returned, using classifications exactly as the engine produced "
-                    "them. Call tools again if you need to verify."
+                    + canonical
+                    + "\nRe-emit the final assessment citing ONLY ids that tools actually "
+                    "returned, using classifications exactly as the engine produced them. "
+                    "Call tools again if you need to verify."
                 )
                 violations = []  # rejected draft must not leak into the session record
                 continue
