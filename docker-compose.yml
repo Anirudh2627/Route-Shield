@@ -2,8 +2,10 @@
 #
 #   docker compose up -d --build
 #
-# The web UI is published on ${HTTP_PORT:-8080}; the backend stays internal
-# (nginx proxies /api). State persists in the `routeshield-data` volume.
+# The web UI is published on 127.0.0.1:${HTTP_PORT:-8080} (localhost-only:
+# the host Nginx proxies to it and the container never binds a public
+# interface); the backend stays internal (nginx proxies /api). State
+# persists in the `routeshield-data` volume.
 
 name: routeshield
 
@@ -47,7 +49,9 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "${HTTP_PORT:-8080}:80"
+      # Loopback only: the host Nginx terminates public traffic and proxies
+      # to 127.0.0.1:${HTTP_PORT:-8080}. Never expose the container directly.
+      - "127.0.0.1:${HTTP_PORT:-8080}:80"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
       interval: 30s

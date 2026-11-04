@@ -1,0 +1,1069 @@
+"""Bounded incident-response agent (the orchestrator).
+
+SAFETY ARCHITECTURE (non-negotiable, enforced by tests):
+
+* The agent is a NEW ENTRY POINT into the existing workflow - never a new
+  execution or approval system. It calls ONLY the read-only tool registry in
+  `services/agent_tools.py` and never imports any write path (approval,
+  policy selection, plan generation).
+* The model NEVER writes operational state. The only DB rows this module
+  creates are its own `InvestigationSession` / `InvestigationStep` trace.
+  Fleet, routes, assessments, policies, proposals and approvals are read-only
+  here; `services/approval.apply_approval` remains the ONLY operational
+  writer, reachable exclusively through the authenticated manager endpoint.
+* Classifications are produced by the deterministic engine. The agent must
+  repeat them verbatim or stay silent; the deterministic grounding validator
+  rejects any fabricated asset id, route id, evidence ref, or classification
+  that contradicts the engine. Ungrounded output is never shown as fact.
+* The loop is bounded: max `agent_max_iterations` model rounds (hard cap 8),
+  per-call LLM timeout, per-tool timeout, and a wall-clock budget for the
+  whole investigation. Every step is persisted incrementally so the UI can
+  follow the live trace and so the audit trail of the agent itself is
+  complete.
+
+PROVIDERS:
+* `VultrChatProvider` - OpenAI-compatible Vultr Serverless Inference with
+  native function calling. If the deployed model rejects the `tools`
+  parameter, the orchestrator downgrades to a strict JSON protocol
+  ({"action": "tool"|"final", ...}) for the rest of the session.
+* `StubChatProvider` - scripted turns for automated tests ONLY. It carries an
+  explicit TEST-ONLY model label that is persisted with the session, so stub
+  results can never be presented as real AI inference. Production code paths
+  never construct it.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re
+import threading
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from dataclasses import dataclass, field
+from typing import Protocol
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
+
+from .. import models
+from ..config import get_settings
+from ..schemas import AgentFinalAssessment
+from . import agent_tools
+
+logger = logging.getLogger("routeshield.agent")
+
+STOP_MODEL_STOPPED = "MODEL_STOPPED"
+STOP_MAX_ITERATIONS = "MAX_ITERATIONS"
+STOP_PROVIDER_ERROR = "PROVIDER_ERROR"
+STOP_MODEL_NOT_CONFIGURED = "MODEL_NOT_CONFIGURED"
+STOP_INVALID_FINAL = "INVALID_FINAL_OUTPUT"
+STOP_GROUNDING_FAILED = "GROUNDING_VALIDATION_FAILED"
+STOP_TIME_BUDGET = "TIME_BUDGET_EXCEEDED"
+
+# Corrective retries the model gets for a broken final answer (invalid JSON
+# or ungrounded claims) before the investigation fails honestly.
+MAX_FINAL_RETRIES = 2
+
+# Hard ceiling on the number of model rounds regardless of configuration.
+HARD_MAX_ITERATIONS = 8
+
+# Model-facing tool payload cap (protects the context window; persistence
+# keeps the same cap so the stored trace equals what the model saw).
+MAX_TOOL_PAYLOAD_CHARS = 40_000
+
+_REF_PATTERNS = (
+    re.compile(r"^CRIT-\d+$"),
+    re.compile(r"^ASSESS-\d+$"),
+    re.compile(r"^VERIF-\d+$"),
+    re.compile(r"^DOC-[0-9a-f]{16}$"),
+    re.compile(r"^PROP-[A-Z0-9-]+$"),
+    re.compile(r"^R-\d+$"),
+)
+
+
+def sanitize_error(exc: Exception) -> str:
+    """One-line error text safe to persist and show (never credentials)."""
+    text = str(exc).replace("\n", " ")[:400]
+    for token in re.findall(r"(sk-[A-Za-z0-9_-]{8,})", text):
+        text = text.replace(token, "sk-***")
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Provider layer
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ToolCallReq:
+    call_id: str
+    name: str
+    arguments: dict
+
+
+@dataclass
+class ProviderTurn:
+    """One model response, normalized across protocols."""
+
+    content: str = ""
+    tool_calls: list[ToolCallReq] = field(default_factory=list)
+    protocol: str = "native"  # native | json
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    finish_reason: str = ""
+    model: str = ""
+
+
+class ProviderError(Exception):
+    """Sanitized provider failure (never contains credentials)."""
+
+
+class ProviderToolingUnsupported(ProviderError):
+    """The deployed model/endpoint rejected native tool calling."""
+
+
+class ChatProvider(Protocol):
+    """Minimal provider interface consumed by the orchestrator."""
+
+    model_label: str
+
+    def chat(self, messages: list[dict], tool_defs: list[dict] | None) -> ProviderTurn:
+        """Run one chat completion. `tool_defs=None` requests the strict JSON
+        protocol (tool schemas are embedded in the system prompt instead)."""
+        ...
+
+
+def final_assessment_schema() -> dict:
+    """JSON schema of the strict final assessment, advertised to the model."""
+    return AgentFinalAssessment.model_json_schema()
+
+
+def build_system_prompt(tool_defs: list[dict]) -> str:
+    schema = json.dumps(final_assessment_schema(), indent=1)
+    tools = "\n".join(
+        f"- {d['function']['name']}: {d['function']['description']}" for d in tool_defs
+    )
+    return f"""You are the RouteShield Incident Response Agent for a school-bus fleet responding to \
+NHTSA recall campaign 26V111 (International/IC Bus CESB hydraulic brakes). You investigate a recall \
+incident by calling READ-ONLY tools, then produce a grounded structured assessment.
+
+HARD CONSTRAINTS (violations end the investigation):
+* You are a READ-ONLY investigator. You cannot and must not change any operational state: no route \
+reassignment, no policy selection, no approvals, no plan generation. Every operational change goes \
+through the fleet manager's approval endpoint, outside this conversation.
+* Vehicle classifications (CAMPAIGN_CRITERIA_MATCH / VERIFICATION_REQUIRED / OUTSIDE_REPORT_VERSION) \
+are computed by a deterministic rule engine. Report them EXACTLY as the tools returned them; never \
+re-derive, override or reinterpret them.
+* Never invent asset ids, route ids, evidence references, numbers or recall facts. Every factual \
+statement in the final output must cite evidence reference ids that appeared verbatim in tool \
+results (e.g. CRIT-12, ASSESS-3, DOC-<sha16>, VERIF-7, R-101, PROP-...).
+* Absence of evidence is not evidence of safety. If evidence is missing or ambiguous, say so in \
+"unknowns_and_missing_evidence" instead of concluding.
+* All fleet data is SYNTHETIC DEMONSTRATION DATA. Surface the evidence banner / provenance the \
+tools give you; never present fleet records as real vehicles.
+
+CLASSIFICATION SEMANTICS (fixed wording, use as-is):
+* CAMPAIGN_CRITERIA_MATCH: All REQUIRED reviewed criteria match. This is NOT a VIN-level \
+confirmation of an open recall.
+* VERIFICATION_REQUIRED: Critical evidence missing or ambiguous - the deterministic engine \
+abstains. Absence of evidence is not evidence of safety.
+* OUTSIDE_REPORT_VERSION: Outside this report version's applicability criteria. This does NOT \
+mean the vehicle is SAFE.
+
+TOOLS (read-only, {len(tool_defs)} available):
+{tools}
+
+WORKFLOW:
+* You have at most {HARD_MAX_ITERATIONS} model rounds. Be efficient: gather evidence, then finish.
+* Typical flow: get_recall_evidence -> get_fleet_assessment -> preview_route_impact -> optionally \
+get_vehicle_detail / get_available_spares / get_open_verification_items -> final assessment.
+* When you have enough evidence, stop calling tools and emit the final assessment.
+
+FINAL ANSWER (strict): reply with a single JSON object matching exactly this schema - no prose, no \
+markdown fences, no extra keys:
+{schema}
+
+Every fact must cite at least one evidence ref that a tool actually returned. Every proposed action \
+requires_human_approval=true (the schema enforces it)."""
+
+
+_JSON_PROTOCOL_INSTRUCTIONS = """TOOL PROTOCOL (strict JSON mode - this endpoint does not support native function calling):
+Every reply MUST be exactly ONE JSON object and nothing else:
+* To call a tool: {"action": "tool", "tool": "<tool name>", "args": {<arguments>}}
+* To finish: {"action": "final", "assessment": {<final assessment object exactly per the schema above>}}
+Tool results are returned to you as user messages containing one JSON object under "tool_result".
+Never emit prose, markdown, or more than one object."""
+
+
+class VultrChatProvider:
+    """OpenAI-compatible chat provider backed by Vultr Serverless Inference."""
+
+    def __init__(self, model: str | None = None):
+        settings = get_settings()
+        self.api_key = settings.vultr_inference_api_key
+        self.base_url = settings.vultr_inference_base_url
+        self.model = model or settings.vultr_inference_model
+        self.timeout = settings.agent_llm_timeout_seconds
+        self.model_label = f"vultr:{self.model}" if self.model else "vultr:<unconfigured>"
+
+    def configured(self) -> bool:
+        return bool(self.api_key and self.model)
+
+    def chat(self, messages: list[dict], tool_defs: list[dict] | None) -> ProviderTurn:
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=self.timeout,
+            max_retries=1,
+        )
+        kwargs: dict = {"model": self.model, "messages": messages, "temperature": 0}
+        if tool_defs is not None:
+            kwargs["tools"] = tool_defs
+        try:
+            resp = client.chat.completions.create(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - normalized to sanitized errors
+            msg = sanitize_error(exc)
+            lowered = msg.lower()
+            # Endpoints/models that reject the tools parameter entirely.
+            if tool_defs is not None and (
+                "tool" in lowered and any(code in msg for code in ("400", "404", "422"))
+            ):
+                raise ProviderToolingUnsupported(msg) from exc
+            raise ProviderError(msg) from exc
+
+        choice = resp.choices[0]
+        usage = getattr(resp, "usage", None)
+        turn = ProviderTurn(
+            content=choice.message.content or "",
+            protocol="native" if tool_defs is not None else "json",
+            finish_reason=choice.finish_reason or "",
+            model=getattr(resp, "model", "") or self.model,
+            prompt_tokens=getattr(usage, "prompt_tokens", None),
+            completion_tokens=getattr(usage, "completion_tokens", None),
+        )
+        for tc in choice.message.tool_calls or []:
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {"_unparseable": (tc.function.arguments or "")[:400]}
+            turn.tool_calls.append(
+                ToolCallReq(call_id=tc.id, name=tc.function.name, arguments=args)
+            )
+        return turn
+
+
+class StubChatProvider:
+    """Scripted provider for automated tests ONLY.
+
+    Never constructed by production code paths; its model label carries an
+    explicit TEST-ONLY marker that is persisted with the session, so stub
+    runs can never be presented as real AI inference.
+    """
+
+    TEST_LABEL = "STUB-PROVIDER-TEST-ONLY"
+
+    def __init__(self, turns: list[dict]):
+        self._turns = list(turns)
+        self.received_messages: list[list[dict]] = []
+        self.received_tool_defs: list[list[dict] | None] = []
+        self.model_label = f"{self.TEST_LABEL}:scripted"
+
+    def configured(self) -> bool:
+        return True
+
+    def chat(self, messages: list[dict], tool_defs: list[dict] | None) -> ProviderTurn:
+        self.received_messages.append(json.loads(json.dumps(messages)))
+        self.received_tool_defs.append(
+            json.loads(json.dumps(tool_defs)) if tool_defs is not None else None
+        )
+        if not self._turns:
+            raise ProviderError("Stub script exhausted: no scripted turns remain.")
+        spec = self._turns.pop(0)
+        turn = ProviderTurn(model=self.model_label)
+        if "tool" in spec:
+            turn.tool_calls.append(
+                ToolCallReq(
+                    call_id=f"stub-{uuid.uuid4().hex[:8]}",
+                    name=spec["tool"],
+                    arguments=spec.get("args", {}),
+                )
+            )
+            turn.finish_reason = "tool_calls"
+        elif "raw" in spec:  # verbatim model content (used to test rejection paths)
+            turn.content = spec["raw"]
+            turn.finish_reason = "stop"
+        elif "final" in spec:
+            # Flat form (what a model would actually emit under the documented
+            # contract) - exercises the liberal acceptance path.
+            turn.content = json.dumps({"action": "final", **spec["final"]})
+            turn.finish_reason = "stop"
+        elif "error" in spec:
+            raise ProviderError(str(spec["error"]))
+        return turn
+
+
+# ---------------------------------------------------------------------------
+# Deterministic grounding: the set of things the model may legitimately reference
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RefIndex:
+    """Everything the model observed in real tool results this session."""
+
+    refs: set[str] = field(default_factory=set)
+    assets: set[str] = field(default_factory=set)
+    routes: set[str] = field(default_factory=set)
+    classifications: dict[str, str] = field(default_factory=dict)
+    eligible_spares: set[str] = field(default_factory=set)
+    tools_used: set[str] = field(default_factory=set)
+
+    def observe(self, tool_name: str, result: dict) -> None:
+        self.tools_used.add(tool_name)
+        self._walk(result)
+
+    def _walk(self, node) -> None:
+        if isinstance(node, dict):
+            asset_id = node.get("asset_id")
+            if isinstance(asset_id, str) and isinstance(node.get("classification"), str):
+                self.classifications[asset_id] = node["classification"]
+            spare = node.get("spare_asset_id")
+            if isinstance(spare, str) and (
+                node.get("feasible") is True
+                or node.get("eligible_as_replacement") is True
+            ):
+                self.eligible_spares.add(spare)
+            if node.get("eligible_as_replacement") is True and isinstance(asset_id, str):
+                self.eligible_spares.add(asset_id)
+            for k, v in node.items():
+                self._observe_scalar(k, v)
+                self._walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                self._walk(item)
+
+    def _observe_scalar(self, key: str, value) -> None:
+        if not isinstance(value, str):
+            return
+        if key in ("ref", "proposal_uid", "basis_ref") or any(p.match(value) for p in _REF_PATTERNS):
+            self.refs.add(value)
+        if key in ("asset_id", "spare_asset_id", "assigned_vehicle", "original_vehicle"):
+            self.assets.add(value)
+        if key == "route_id":
+            self.routes.add(value)
+
+
+def validate_grounding(final: AgentFinalAssessment, index: RefIndex) -> list[str]:
+    """Deterministic grounding check against observed tool outputs.
+
+    Returns a list of violations; empty list == grounded.
+    """
+    violations: list[str] = []
+
+    for i, fact in enumerate(final.facts):
+        if not fact.evidence_refs:
+            violations.append(f"facts[{i}]: no evidence_refs cited")
+        for ref in fact.evidence_refs:
+            if ref not in index.refs:
+                violations.append(
+                    f"facts[{i}]: evidence ref '{ref}' was never returned by a tool"
+                )
+
+    for i, claim in enumerate(final.vehicle_classifications):
+        if claim.asset_id not in index.assets:
+            violations.append(
+                f"vehicle_classifications[{i}]: asset '{claim.asset_id}' never appeared in a "
+                "tool result"
+            )
+        elif claim.asset_id in index.classifications and (
+            index.classifications[claim.asset_id] != claim.classification
+        ):
+            violations.append(
+                f"vehicle_classifications[{i}]: classification '{claim.classification}' for "
+                f"'{claim.asset_id}' contradicts the deterministic engine value "
+                f"'{index.classifications[claim.asset_id]}'"
+            )
+
+    for i, route_id in enumerate(final.affected_routes):
+        if route_id not in index.routes:
+            violations.append(
+                f"affected_routes[{i}]: route '{route_id}' never appeared in a tool result"
+            )
+
+    for i, cand in enumerate(final.recovery_candidates):
+        if cand.route_id not in index.routes:
+            violations.append(
+                f"recovery_candidates[{i}]: route '{cand.route_id}' never appeared in a tool "
+                "result"
+            )
+        if cand.spare_asset_id:
+            if cand.spare_asset_id not in index.assets:
+                violations.append(
+                    f"recovery_candidates[{i}]: spare '{cand.spare_asset_id}' never appeared in "
+                    "a tool result"
+                )
+            elif cand.spare_asset_id not in index.eligible_spares:
+                violations.append(
+                    f"recovery_candidates[{i}]: spare '{cand.spare_asset_id}' was never shown as "
+                    "an eligible/feasible replacement by a tool"
+                )
+
+    for i, ref in enumerate(final.evidence_references):
+        if ref.ref_id not in index.refs:
+            violations.append(
+                f"evidence_references[{i}]: ref '{ref.ref_id}' was never returned by a tool"
+            )
+
+    return violations
+
+
+# ---------------------------------------------------------------------------
+# Conversation history (protocol-agnostic, rendered per provider call)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _HistoryEvent:
+    role: str  # user | assistant | tool
+    content: str = ""
+    tool_calls: list[ToolCallReq] = field(default_factory=list)
+    tool_call_id: str = ""
+
+
+class _Conversation:
+    def __init__(self, system_prompt: str):
+        self.system_prompt = system_prompt
+        self.events: list[_HistoryEvent] = []
+
+    def user(self, content: str) -> None:
+        self.events.append(_HistoryEvent(role="user", content=content))
+
+    def assistant_tool_calls(self, calls: list[ToolCallReq]) -> None:
+        self.events.append(_HistoryEvent(role="assistant", tool_calls=calls))
+
+    def assistant(self, content: str) -> None:
+        self.events.append(_HistoryEvent(role="assistant", content=content))
+
+    def tool(self, call_id: str, payload: str) -> None:
+        self.events.append(_HistoryEvent(role="tool", tool_call_id=call_id, content=payload))
+
+    def render(self, protocol: str) -> list[dict]:
+        if protocol == "json":
+            # Strict JSON protocol: the tool-contract replaces the native
+            # `tools` parameter and is appended to the system prompt.
+            system = self.system_prompt + "\n\n" + _JSON_PROTOCOL_INSTRUCTIONS
+        else:
+            system = self.system_prompt
+        if protocol == "native":
+            msgs: list[dict] = [{"role": "system", "content": system}]
+            for ev in self.events:
+                if ev.role == "assistant" and ev.tool_calls:
+                    msgs.append({
+                        "role": "assistant",
+                        "content": ev.content or None,
+                        "tool_calls": [
+                            {
+                                "id": tc.call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": json.dumps(tc.arguments),
+                                },
+                            }
+                            for tc in ev.tool_calls
+                        ],
+                    })
+                elif ev.role == "tool":
+                    msgs.append({
+                        "role": "tool",
+                        "tool_call_id": ev.tool_call_id,
+                        "content": ev.content,
+                    })
+                else:
+                    msgs.append({"role": ev.role, "content": ev.content})
+            return msgs
+        # Strict JSON protocol: everything collapses to system/user turns.
+        msgs = [{"role": "system", "content": system}]
+        for ev in self.events:
+            if ev.role == "assistant":
+                if ev.tool_calls:
+                    msgs.append({"role": "assistant", "content": json.dumps({
+                        "action": "tool",
+                        "tool": ev.tool_calls[0].name,
+                        "args": ev.tool_calls[0].arguments,
+                    })})
+                elif ev.content:
+                    msgs.append({"role": "assistant", "content": ev.content})
+            elif ev.role == "tool":
+                try:
+                    payload = json.loads(ev.content)
+                except json.JSONDecodeError:
+                    payload = {"_unparseable": ev.content[:400]}
+                msgs.append({"role": "user", "content": json.dumps({"tool_result": payload})})
+            else:
+                msgs.append({"role": "user", "content": ev.content})
+        return msgs
+
+
+# ---------------------------------------------------------------------------
+# JSON extraction helpers
+# ---------------------------------------------------------------------------
+
+
+def _strip_fences(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1] if "\n" in text else text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        if text.startswith("json"):
+            text = text[4:]
+    return text.strip()
+
+
+def _extract_json_object(raw: str) -> tuple[dict | None, str]:
+    """Best-effort extraction of one JSON object from model content."""
+    text = _strip_fences(raw)
+    candidates = [text]
+    first, last = text.find("{"), text.rfind("}")
+    if first != -1 and last > first:
+        candidates.append(text[first : last + 1])
+    for cand in candidates:
+        try:
+            obj = json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj, ""
+    return None, "content is not a single JSON object"
+
+
+# ---------------------------------------------------------------------------
+# The bounded investigation loop
+# ---------------------------------------------------------------------------
+
+
+class InvestigationRunner:
+    def __init__(
+        self,
+        db: Session,
+        provider: ChatProvider,
+        *,
+        max_iterations: int | None = None,
+        total_budget_seconds: float | None = None,
+    ):
+        self.db = db
+        self.provider = provider
+        settings = get_settings()
+        configured = max_iterations or settings.agent_max_iterations
+        self.max_iterations = max(1, min(int(configured), HARD_MAX_ITERATIONS))
+        self.total_budget = total_budget_seconds or settings.agent_total_budget_seconds
+        self.tool_defs = agent_tools.openai_tool_defs()
+        self.system_prompt = build_system_prompt(self.tool_defs)
+        if isinstance(provider, StubChatProvider):
+            # Tests may exercise the JSON protocol explicitly; production
+            # always starts native and downgrades on demand.
+            pass
+        self.index = RefIndex()
+        self.protocol = "native"
+        self._started = time.monotonic()
+        # Read-only tools run on their own short-lived Sessions, never on
+        # `self.db` (see _execute_tool_call). The factory is bound to the
+        # SAME engine as the investigation session, so tool calls observe
+        # exactly the state the orchestrator sees; sessionmaker itself is
+        # thread-safe and meant to be used from worker threads.
+        self._tool_session_factory = sessionmaker(
+            bind=db.get_bind(), autoflush=False, expire_on_commit=False
+        )
+
+    # -- helpers -----------------------------------------------------------
+
+    def _budget_left(self) -> float:
+        return self.total_budget - (time.monotonic() - self._started)
+
+    def _step(self, session: models.InvestigationSession, seq: int, kind: str, **kw) -> None:
+        self.db.add(models.InvestigationStep(session_id=session.id, seq=seq, kind=kind, **kw))
+        self.db.commit()
+
+    def _execute_tool_call(self, name: str, args) -> dict:
+        """Worker-thread entry point for one read-only tool call.
+
+        SESSION LIFECYCLE (regression-covered in tests/test_agent.py):
+
+        * The callable receives NO reference to `self.db`. SQLAlchemy
+          Sessions are not thread-safe, and the orchestrator thread keeps
+          using `self.db` (committing steps, finalising the session) while
+          - and after - a tool runs in the worker thread.
+        * A private Session is created here and closed in the `finally`
+          below, entirely inside this worker thread. `fut.result()` can
+          only return after close() has run, and a timed-out (abandoned)
+          worker closes its own session when its handler eventually
+          returns - so a hung call can never leak an open transaction into
+          the pool or touch the orchestrator's session and its later
+          writes.
+        * Tools are read-only by registry contract: nothing here ever
+          commits. close() discards the read transaction; the connection
+          goes back to the pool untouched.
+        """
+        tool_db = self._tool_session_factory()
+        try:
+            return agent_tools.execute(tool_db, name, args)
+        finally:
+            tool_db.close()
+
+    def _run_tool(self, name: str, args_raw: dict) -> tuple[dict | None, str | None, str]:
+        """Execute one tool call with validation + timeout.
+
+        Returns (result, error, status). Exactly one of result/error is None.
+        """
+        if not isinstance(args_raw, dict):
+            return None, f"INVALID_ARGS: arguments must be a JSON object, got {type(args_raw).__name__}.", "INVALID_ARGS"
+        spec = agent_tools.REGISTRY.get(name)
+        if spec is None:
+            return (
+                None,
+                f"Unknown tool '{name}'. Allowed tools: {sorted(agent_tools.REGISTRY)}.",
+                "INVALID_TOOL_CALL",
+            )
+        try:
+            args = agent_tools.parse_args(name, args_raw)
+        except ValueError as exc:
+            return None, f"INVALID_ARGS: {exc}", "INVALID_ARGS"
+        # Read-only DB work in a worker thread so a hung handler cannot wedge
+        # the investigation. The worker runs the tool on its OWN session
+        # (created and closed inside _execute_tool_call) - never on `self.db`:
+        # a timed-out worker keeps running in the background after
+        # shutdown(wait=False), and sharing the orchestrator's Session with it
+        # would interleave two threads on one Session/connection. Shutdown
+        # stays non-blocking: the loop continues immediately.
+        ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"tool-{name}")
+        try:
+            fut = ex.submit(self._execute_tool_call, name, args)
+            try:
+                return fut.result(timeout=spec.timeout_seconds), None, "OK"
+            except FutureTimeoutError:
+                return (
+                    None,
+                    f"TOOL_TIMEOUT: '{name}' exceeded {spec.timeout_seconds:.0f}s and was abandoned.",
+                    "TIMEOUT",
+                )
+            except Exception as exc:  # noqa: BLE001 - surfaced to the model, not the stack
+                return None, f"TOOL_ERROR: {sanitize_error(exc)}", "TOOL_ERROR"
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
+
+    def _chat_round(self, conversation: _Conversation) -> ProviderTurn:
+        tool_defs = self.tool_defs if self.protocol == "native" else None
+        try:
+            return self.provider.chat(conversation.render(self.protocol), tool_defs)
+        except ProviderToolingUnsupported:
+            if self.protocol == "native":
+                self.protocol = "json"  # downgrade for the rest of the session
+                return self.provider.chat(conversation.render("json"), None)
+            raise
+
+    def _cap_payload(self, result: dict) -> dict:
+        text = json.dumps(result, default=str)
+        if len(text) <= MAX_TOOL_PAYLOAD_CHARS:
+            return result
+        return {
+            "_truncated": True,
+            "_note": "payload exceeded the trace cap; shown truncated",
+            "_payload": text[:MAX_TOOL_PAYLOAD_CHARS],
+        }
+
+    # -- final-answer handling ------------------------------------------------
+
+    def _accept_final(self, raw: str) -> tuple[AgentFinalAssessment | None, str]:
+        obj, err = _extract_json_object(raw)
+        if obj is None:
+            return None, f"final answer {err}"
+        if obj.get("action") == "tool":
+            return None, (
+                "final answer used the tool action; to call tools reply with tool calls, and "
+                "when done emit the final assessment object"
+            )
+        if obj.get("action") == "final":
+            nested = obj.get("assessment")
+            if isinstance(nested, dict):
+                payload = nested
+            else:  # flat form: {"action": "final", <schema fields>}
+                payload = {k: v for k, v in obj.items() if k != "action"}
+        else:
+            payload = obj  # bare assessment object (native protocol contract)
+        if not isinstance(payload, dict):
+            return None, "final answer must be the assessment JSON object"
+        try:
+            return AgentFinalAssessment.model_validate(payload), ""
+        except Exception as exc:  # pydantic ValidationError
+            return None, f"final assessment failed schema validation: {sanitize_error(exc)}"
+
+    # -- main loop ---------------------------------------------------------
+
+    def run(self, session: models.InvestigationSession) -> models.InvestigationSession:
+        session.model = self.provider.model_label  # stub label carries TEST-ONLY marker
+        self.db.commit()
+
+        conversation = _Conversation(self.system_prompt)
+        conversation.user(
+            f"INVESTIGATION OBJECTIVE: {session.objective}\n"
+            f"Incident under investigation: id={session.incident_id} "
+            f"(campaign {session.incident.campaign_number}). Investigate with the read-only "
+            "tools, then produce the final assessment JSON."
+        )
+
+        stop_reason = ""
+        provider_error = ""
+        final_result: dict | None = None
+        violations: list[str] = []
+        seq = 0
+
+        try:
+            configured = getattr(self.provider, "configured", None)
+            if callable(configured) and not configured():
+                stop_reason = STOP_MODEL_NOT_CONFIGURED
+                provider_error = (
+                    "VULTR_INFERENCE_API_KEY / VULTR_INFERENCE_MODEL are not configured. "
+                    "No inference was performed and nothing was simulated."
+                )
+            else:
+                stop_reason, final_result, violations, seq = self._loop(
+                    session, conversation, seq
+                )
+        except ProviderError as exc:
+            stop_reason = STOP_PROVIDER_ERROR
+            provider_error = sanitize_error(exc)
+        except Exception as exc:  # noqa: BLE001 - investigations must reach a terminal state
+            logger.exception("Investigation %s crashed", session.session_uid)
+            stop_reason = STOP_PROVIDER_ERROR
+            provider_error = f"unexpected error: {sanitize_error(exc)}"
+
+        completed = final_result is not None and not violations and stop_reason == STOP_MODEL_STOPPED
+        session.status = "COMPLETED" if completed else "FAILED"
+        session.stop_reason = stop_reason
+        session.provider_error = provider_error
+        session.grounding_violations = violations
+        session.final_result = final_result if completed else None
+        session.finished_at = models.utcnow()
+        session.duration_ms = int((time.monotonic() - self._started) * 1000)
+        self.db.commit()
+        return session
+
+    def _loop(
+        self,
+        session: models.InvestigationSession,
+        conversation: _Conversation,
+        seq: int,
+    ):
+        invalid_final_retries = 0
+        grounding_retries = 0
+        stop_reason = ""
+        final_result: dict | None = None
+        violations: list[str] = []
+
+        for iteration in range(1, self.max_iterations + 1):
+            if self._budget_left() <= 0:
+                stop_reason = STOP_TIME_BUDGET
+                break
+
+            turn = self._chat_round(conversation)
+            session.iterations_used = iteration
+            if turn.prompt_tokens:
+                session.prompt_tokens = (session.prompt_tokens or 0) + turn.prompt_tokens
+            if turn.completion_tokens:
+                session.completion_tokens = (session.completion_tokens or 0) + turn.completion_tokens
+            self.db.commit()
+
+            # Persist narration (not hidden chain-of-thought: the model is
+            # instructed to give one-sentence rationale only).
+            if turn.content.strip() and turn.tool_calls:
+                seq += 1
+                self._step(
+                    session, seq, "MODEL_MESSAGE", status="OK",
+                    explanation=turn.content.strip()[:2000],
+                )
+                conversation.assistant(turn.content.strip())
+
+            if turn.tool_calls:
+                conversation.assistant_tool_calls(turn.tool_calls)
+                for tc in turn.tool_calls:
+                    if self._budget_left() <= 0:
+                        stop_reason = STOP_TIME_BUDGET
+                        break
+                    seq += 1
+                    t0 = time.monotonic()
+                    result, error, status = self._run_tool(tc.name, tc.arguments)
+                    duration_ms = int((time.monotonic() - t0) * 1000)
+                    session.tool_calls_count = (session.tool_calls_count or 0) + 1
+                    if error is not None:
+                        self._step(
+                            session, seq, "TOOL_CALL", tool_name=tc.name,
+                            tool_args=tc.arguments if isinstance(tc.arguments, dict) else None,
+                            status=status, explanation=error[:2000],
+                            duration_ms=duration_ms,
+                        )
+                        conversation.tool(tc.call_id, json.dumps({"error": error}))
+                    else:
+                        capped = self._cap_payload(result)
+                        self.index.observe(tc.name, result)
+                        self._step(
+                            session, seq, "TOOL_CALL", tool_name=tc.name,
+                            tool_args=tc.arguments if isinstance(tc.arguments, dict) else None,
+                            status="OK", result=capped, duration_ms=duration_ms,
+                        )
+                        conversation.tool(tc.call_id, json.dumps(capped, default=str))
+                if stop_reason:
+                    break
+                continue
+
+            # No tool calls -> the model must deliver the final assessment.
+            content = turn.content
+            if not content.strip() and turn.protocol == "json":
+                content = ""
+            assessment, err = self._accept_final(content)
+            if assessment is None:
+                invalid_final_retries += 1
+                seq += 1
+                self._step(
+                    session, seq, "VALIDATION", status=STOP_INVALID_FINAL,
+                    explanation=err[:2000],
+                )
+                if invalid_final_retries >= MAX_FINAL_RETRIES:
+                    stop_reason = STOP_INVALID_FINAL
+                    break
+                conversation.assistant(content[:2000] if content else "(empty reply)")
+                conversation.user(
+                    "Your reply was REJECTED: " + err + "\nRe-read the final-answer contract and "
+                    "reply with exactly one JSON object matching the schema (or call a tool first "
+                    "if you still need evidence)."
+                )
+                continue
+
+            violations = validate_grounding(assessment, self.index)
+            if violations:
+                grounding_retries += 1
+                seq += 1
+                self._step(
+                    session, seq, "VALIDATION", status=STOP_GROUNDING_FAILED,
+                    explanation="grounding validator rejected the final assessment",
+                    result={"violations": violations},
+                )
+                if grounding_retries >= MAX_FINAL_RETRIES:
+                    stop_reason = STOP_GROUNDING_FAILED
+                    break
+                conversation.assistant(content[:2000])
+                conversation.user(
+                    "Your final assessment was REJECTED by the deterministic grounding validator. "
+                    "Ungrounded claims are never shown to users. Violations:\n- "
+                    + "\n- ".join(violations)
+                    + "\nRe-emit the final assessment citing ONLY reference ids that tools "
+                    "actually returned, using classifications exactly as the engine produced "
+                    "them. Call tools again if you need to verify."
+                )
+                violations = []  # rejected draft must not leak into the session record
+                continue
+
+            # Grounded final answer accepted.
+            seq += 1
+            self._step(
+                session, seq, "FINAL", status="OK",
+                explanation="final assessment accepted by schema + grounding validation",
+            )
+            final_result = assessment.model_dump()
+            stop_reason = STOP_MODEL_STOPPED
+            break
+
+        if not stop_reason:
+            stop_reason = STOP_MAX_ITERATIONS if final_result is None else STOP_MODEL_STOPPED
+        return stop_reason, final_result, violations, seq
+
+
+# ---------------------------------------------------------------------------
+# Public entry points
+# ---------------------------------------------------------------------------
+
+
+def run_investigation(
+    db: Session,
+    *,
+    incident_id: int,
+    objective: str,
+    requested_by: str,
+    provider: ChatProvider | None = None,
+    max_iterations: int | None = None,
+    total_budget_seconds: float | None = None,
+) -> models.InvestigationSession:
+    """Create and run one bounded investigation synchronously.
+
+    Writes ONLY InvestigationSession / InvestigationStep rows. The router
+    launches it on a worker thread; tests may call it directly.
+    """
+    incident = db.get(models.Incident, incident_id)
+    if incident is None:
+        raise ValueError(f"Incident {incident_id} not found")
+
+    provider = provider or VultrChatProvider()
+    session = models.InvestigationSession(
+        session_uid=f"INV-{uuid.uuid4().hex[:12].upper()}",
+        incident_id=incident.id,
+        objective=objective,
+        requested_by=requested_by,
+        status="INVESTIGATING",
+    )
+    db.add(session)
+    db.commit()
+
+    runner = InvestigationRunner(
+        db, provider, max_iterations=max_iterations, total_budget_seconds=total_budget_seconds
+    )
+    return runner.run(session)
+
+
+def launch_investigation(
+    *,
+    incident_id: int,
+    objective: str,
+    requested_by: str,
+    provider: ChatProvider | None = None,
+    db: Session | None = None,
+) -> str:
+    """Create the session row synchronously, then run the loop on a daemon
+    thread. Returns the session_uid immediately; clients poll the GET
+    endpoint. Writes ONLY InvestigationSession/InvestigationStep rows.
+    """
+    from ..db import SessionLocal
+
+    own_db = db is None
+    db = db or SessionLocal()
+    try:
+        incident = db.get(models.Incident, incident_id)
+        if incident is None:
+            raise ValueError(f"Incident {incident_id} not found")
+        session = models.InvestigationSession(
+            session_uid=f"INV-{uuid.uuid4().hex[:12].upper()}",
+            incident_id=incident.id,
+            objective=objective,
+            requested_by=requested_by,
+            status="INVESTIGATING",
+        )
+        db.add(session)
+        db.commit()
+        session_uid = session.session_uid
+    finally:
+        if own_db:
+            db.close()
+
+    def _work() -> None:
+        thread_db = SessionLocal()
+        try:
+            session = thread_db.scalar(
+                select(models.InvestigationSession).where(
+                    models.InvestigationSession.session_uid == session_uid
+                )
+            )
+            if session is None:  # pragma: no cover - row was committed above
+                return
+            runner = InvestigationRunner(thread_db, provider or VultrChatProvider())
+            runner.run(session)
+        except Exception:  # noqa: BLE001 - thread must never crash the app
+            logger.exception("Background investigation %s failed", session_uid)
+        finally:
+            thread_db.close()
+
+    threading.Thread(target=_work, name=f"agent-{session_uid}", daemon=True).start()
+    return session_uid
+
+
+def agent_status() -> dict:
+    """Status payload for GET /api/agents/status (read-only, no LLM calls)."""
+    settings = get_settings()
+    provider = VultrChatProvider()
+    configured = provider.configured()
+    return {
+        "configured": configured,
+        "model": settings.vultr_inference_model or "",
+        "base_url_host": _host_only(settings.vultr_inference_base_url),
+        "max_iterations": min(settings.agent_max_iterations, HARD_MAX_ITERATIONS),
+        "tools": sorted(agent_tools.REGISTRY),
+        "write_tools_exposed": False,
+        "note": (
+            "Read-only investigation agent. Tool calls and outputs are persisted verbatim; "
+            "the deterministic engine's classifications are authoritative; every operational "
+            "change still requires manager approval."
+            if configured
+            else "Vultr Serverless Inference is not configured (VULTR_INFERENCE_API_KEY / "
+            "VULTR_INFERENCE_MODEL). The agent cannot run and will report MODEL_NOT_CONFIGURED "
+            "honestly - nothing is simulated."
+        ),
+    }
+
+
+def probe_provider() -> dict:
+    """Minimal live check of the inference endpoint + native tool calling.
+
+    Costs one tiny completion. Never touches the database.
+    """
+    provider = VultrChatProvider()
+    if not provider.configured():
+        return {
+            "configured": False,
+            "tool_calling_supported": None,
+            "model": "",
+            "detail": "VULTR_INFERENCE_API_KEY / VULTR_INFERENCE_MODEL not set.",
+            "duration_ms": 0,
+        }
+    probe_tool = [{
+        "type": "function",
+        "function": {
+            "name": "get_recall_evidence",
+            "description": "Retrieve recall evidence for an incident.",
+            "parameters": {
+                "type": "object",
+                "properties": {"incident_id": {"type": "integer", "minimum": 1}},
+                "required": ["incident_id"],
+            },
+        },
+    }]
+    messages = [
+        {"role": "system", "content": "You are a connectivity probe. Use the provided tool exactly once."},
+        {"role": "user", "content": "Call get_recall_evidence with incident_id 1."},
+    ]
+    started = time.monotonic()
+    try:
+        turn = provider.chat(messages, probe_tool)
+    except ProviderToolingUnsupported as exc:
+        return {
+            "configured": True,
+            "tool_calling_supported": False,
+            "model": provider.model,
+            "detail": f"Native tool calling rejected; strict JSON protocol will be used: {exc}",
+            "duration_ms": int((time.monotonic() - started) * 1000),
+        }
+    except ProviderError as exc:
+        return {
+            "configured": True,
+            "tool_calling_supported": None,
+            "model": provider.model,
+            "detail": f"Provider error: {exc}",
+            "duration_ms": int((time.monotonic() - started) * 1000),
+        }
+    supported = bool(turn.tool_calls)
+    return {
+        "configured": True,
+        "tool_calling_supported": supported,
+        "model": turn.model or provider.model,
+        "detail": (
+            "Native function calling works." if supported
+            else "Endpoint accepted the request but the model replied without a tool call."
+        ),
+        "duration_ms": int((time.monotonic() - started) * 1000),
+    }
+
+
+def _host_only(url: str) -> str:
+    match = re.match(r"^https?://([^/]+)", url or "")
+    return match.group(1) if match else ""

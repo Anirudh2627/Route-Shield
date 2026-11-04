@@ -5,9 +5,10 @@ import IncidentCommand from "./views/IncidentCommand";
 import FleetView from "./views/FleetView";
 import RouteRecoveryView from "./views/RouteRecoveryView";
 import EvidenceAuditView from "./views/EvidenceAuditView";
+import AgentConsoleView from "./views/AgentConsoleView";
 import { Spinner } from "./components/ui";
 
-type View = "incident" | "fleet" | "recovery" | "evidence";
+type View = "incident" | "agent" | "fleet" | "recovery" | "evidence";
 
 const NAV: Array<{ id: View; label: string; icon: JSX.Element }> = [
   {
@@ -17,6 +18,17 @@ const NAV: Array<{ id: View; label: string; icon: JSX.Element }> = [
       <svg className="h-[18px] w-[18px]" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z" strokeLinejoin="round" />
         <path d="M12 8v5M12 16h.01" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  {
+    id: "agent",
+    label: "Agent Console",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <rect x="4" y="7" width="16" height="10" rx="2" />
+        <path d="M9 11l-2 2 2 2M15 11l2 2-2 2" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M12 3v2M12 19v2" strokeLinecap="round" />
       </svg>
     ),
   },
@@ -190,7 +202,7 @@ export default function App() {
             </span>
           </div>
           <div className="text-slate-500">
-            LLM: {health ? (health.llm_configured ? "configured (extraction only)" : "not configured") : "…"}
+            Agent: {health ? (health.llm_configured ? "inference configured" : "not configured — investigations fail honestly") : "…"}
           </div>
           {user ? (
             <div className="flex items-center justify-between gap-2 pt-1">
@@ -228,6 +240,9 @@ export default function App() {
               onIncidentChanged={reloadIncidents}
               onRequireAuth={() => setShowLogin(true)}
             />
+          )}
+          {view === "agent" && (
+            <AgentConsoleView incident={incident} authed={authed} onRequireAuth={() => setShowLogin(true)} />
           )}
           {view === "fleet" && <FleetView incident={incident} authed={authed} onRequireAuth={() => setShowLogin(true)} />}
           {view === "recovery" && (

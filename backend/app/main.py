@@ -9,10 +9,12 @@ Startup sequence:
    fixture keeps the app fully functional and the UI says so explicitly.
 
 Security architecture:
-* The LLM (Vultr Serverless Inference) is used ONLY inside
-  services/llm_extraction.py to produce structured extraction output marked
-  NEEDS_REVIEW. It has no database access, no tool access and no ability to
-  write operational records.
+* The LLM (Vultr Serverless Inference) is used in exactly two places, both
+  read-only: services/llm_extraction.py (structured report extraction, marked
+  NEEDS_REVIEW) and services/agent.py (the bounded incident-response agent).
+  The agent can only call the read-only tool registry in
+  services/agent_tools.py; it has no write path to operational records, and
+  its final output is deterministically grounded against real tool results.
 * Operational state changes happen exclusively through the authenticated
   POST /api/incidents/{id}/approve-plan endpoint.
 """
@@ -31,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__
 from .config import get_settings
 from .db import SessionLocal, init_db
-from .routers import benchmarks, fleet, incidents, system, vpic
+from .routers import agents, benchmarks, fleet, incidents, system, vpic
 from .seed import DEMO_CAMPAIGN, seed_all
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -108,6 +110,7 @@ def create_app() -> FastAPI:
     app.include_router(fleet.router, prefix="/api")
     app.include_router(benchmarks.router, prefix="/api")
     app.include_router(vpic.router, prefix="/api")
+    app.include_router(agents.router, prefix="/api")
 
     # Optional: serve a built frontend from the same process (single-container
     # deployments). In docker-compose the frontend has its own nginx container.
