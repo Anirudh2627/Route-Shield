@@ -2,6 +2,8 @@
    ALL authoritative application state lives in the backend database. */
 
 import type {
+  AgentProbe,
+  AgentStatus,
   ApprovalResponse,
   AuditEvent,
   BenchmarkRun,
@@ -9,6 +11,7 @@ import type {
   FleetAssessmentSummary,
   Health,
   Incident,
+  Investigation,
   PolicySelection,
   Proposal,
   Route,
@@ -120,6 +123,19 @@ export const api = {
       "/vpic/recall-check-single-vin",
       { method: "POST", body: JSON.stringify({ vin, model_year: null }) },
     ),
+
+  // Incident Response Agent (read-only investigations)
+  agentStatus: () => request<AgentStatus>("/agents/status"),
+  agentProbe: () => request<AgentProbe>("/agents/probe", { method: "POST" }),
+  startInvestigation: (incident_id: number, objective: string) =>
+    request<Investigation>("/agents/investigations", {
+      method: "POST",
+      body: JSON.stringify({ incident_id, objective }),
+    }),
+  investigations: (incident_id: number) =>
+    request<Investigation[]>(`/agents/incidents/${incident_id}/investigations`),
+  investigation: (session_uid: string) =>
+    request<Investigation>(`/agents/investigations/${session_uid}`),
 };
 
 export function errorDetail(err: unknown): string {

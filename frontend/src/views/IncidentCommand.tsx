@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { api, errorDetail, getToken } from "../api";
 import type {
   ApprovalResponse,
   AuditEvent,
   BenchmarkRun,
+  Classification,
   Evidence,
   FleetAssessmentSummary,
   Incident,
@@ -200,15 +202,15 @@ export default function IncidentCommand({
             </button>
           </div>
         </div>
-        <div className="mt-3 grid gap-2 md:grid-cols-4 text-[12px]">
-          <KV k="Report version" v={<span className="font-mono">{version ? shortHash(version.document_sha256, 16) : "—"}</span>} />
-          <KV k="Retrieved" v={fmtTime(version?.retrieval_timestamp)} />
-          <KV k="Review status" v={
+        <div className="mt-3 flex flex-wrap gap-x-8 gap-y-2.5">
+          <MetaStat k="Report version" v={version ? shortHash(version.document_sha256, 16) : "—"} mono wide />
+          <MetaStat k="Retrieved" v={fmtTime(version?.retrieval_timestamp)} />
+          <MetaStat k="Review status" v={
             version?.review_status === "REVIEWED"
               ? <StatusChip tone="green">REVIEWED</StatusChip>
               : <StatusChip tone="amber">{version?.review_status ?? "UNKNOWN"}</StatusChip>
           } />
-          <KV k="Provenance" v={<span className="font-mono text-[11px]">{version?.provenance ?? "—"}</span>} />
+          <MetaStat k="Provenance" v={version?.provenance ?? "—"} mono />
         </div>
       </div>
 
@@ -337,28 +339,11 @@ export default function IncidentCommand({
                   all {assessment.vin_status_counts.VIN_STATUS_UNAVAILABLE ?? 0} synthetic records honestly report VIN_STATUS_UNAVAILABLE.
                 </Banner>
                 {/* ---------------- D. Vehicle table ---------------- */}
-                <div className="mt-4 overflow-x-auto rounded-lg border border-slate-200">
-                  <table className="w-full text-[12.5px]">
-                    <thead>
-                      <tr>
-                        <th className="table-th">Asset ID</th>
-                        <th className="table-th">MY</th>
-                        <th className="table-th">Production date</th>
-                        <th className="table-th">Brake config</th>
-                        <th className="table-th">Classification</th>
-                        <th className="table-th">Explanation</th>
-                        <th className="table-th">VIN evidence</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[...assessment.assessments]
-                        .sort((a, b) => rank(a.classification) - rank(b.classification))
-                        .map((a) => (
-                          <VehicleRow key={a.id} a={a} />
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
+                <VehicleAssessmentTable
+                  assessments={[...assessment.assessments].sort(
+                    (a, b) => rank(a.classification) - rank(b.classification),
+                  )}
+                />
               </>
             ) : (
               <Spinner label="Loading assessment…" />
@@ -614,6 +599,17 @@ function rank(c: string): number {
   return c === "CAMPAIGN_CRITERIA_MATCH" ? 0 : c === "VERIFICATION_REQUIRED" ? 1 : 2;
 }
 
+function MetaStat({ k, v, mono = false, wide = false }: { k: string; v: ReactNode; mono?: boolean; wide?: boolean }) {
+  return (
+    <div className={`min-w-0 ${wide ? "w-56" : ""}`}>
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-400">{k}</div>
+      <div className={`mt-0.5 text-[12.5px] font-semibold text-ink-800 truncate ${mono ? "font-mono" : ""}`} title={typeof v === "string" ? v : undefined}>
+        {v}
+      </div>
+    </div>
+  );
+}
+
 function BenchmarkStrip() {
   const [bench, setBench] = useState<BenchmarkRun | null>(null);
   const [busy, setBusy] = useState(false);
@@ -647,26 +643,14 @@ function BenchmarkStrip() {
       {bench ? (
         <div className="space-y-2.5">
           <div className="text-[11px] font-bold uppercase tracking-wider text-amber-700">{bench.label}</div>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-2.5 text-center">
-            <div className="rounded-md border border-slate-200 px-2 py-2">
-              <div className="text-[10.5px] text-ink-500 font-semibold">SAMPLES</div>
-              <div className="text-lg font-bold tabular-nums">{bench.sample_count}</div>
-            </div>
-            <div className="rounded-md border border-slate-200 px-2 py-2">
-              <div className="text-[10.5px] text-ink-500 font-semibold">MATCH ACC.</div>
-              <div className="text-lg font-bold tabular-nums text-emerald-600">{pctv(m?.correct_match_rate)}</div>
-            </div>
-            <div className="rounded-md border border-slate-200 px-2 py-2">
-              <div className="text-[10.5px] text-ink-500 font-semibold">ABSTENTION</div>
-              <div className="text-lg font-bold tabular-nums text-emerald-600">{pctv(m?.correct_abstention_rate)}</div>
-            </div>
-            <div className="rounded-md border border-emerald-300 bg-emerald-50 px-2 py-2">
-              <div className="text-[10.5px] text-emerald-700 font-semibold">FALSE-CONFIRM</div>
-              <div className="text-lg font-bold tabular-nums text-emerald-700">{pctv(m?.false_confirmation_rate)}</div>
-            </div>
-            <div className="rounded-md border border-slate-200 px-2 py-2">
-              <div className="text-[10.5px] text-ink-500 font-semibold">LAST RUN</div>
-              <div className="text-[11px] font-semibold pt-1.5 leading-tight">{fmtTime(bench.run_at)}</div>
+          <div className="grid grid-cols-2 gap-2.5">
+            <BenchTile label="Samples" value={String(bench.sample_count)} />
+            <BenchTile label="Match acc." value={pctv(m?.correct_match_rate)} tone="text-emerald-600" />
+            <BenchTile label="Abstention" value={pctv(m?.correct_abstention_rate)} tone="text-emerald-600" />
+            <BenchTile label="False-confirm" value={pctv(m?.false_confirmation_rate)} tone="text-emerald-700" highlight />
+            <div className="col-span-2 rounded-md border border-slate-200 px-3 py-2 flex items-center justify-between gap-3 min-w-0">
+              <span className="text-[10.5px] text-ink-500 font-semibold uppercase tracking-wider shrink-0">Last run</span>
+              <span className="text-[11.5px] font-semibold tabular-nums text-ink-700 text-right">{fmtTime(bench.run_at)}</span>
             </div>
           </div>
         </div>
@@ -681,6 +665,19 @@ function BenchmarkStrip() {
   );
 }
 
+function BenchTile({ label, value, tone = "text-ink-900", highlight = false }: {
+  label: string; value: string; tone?: string; highlight?: boolean;
+}) {
+  return (
+    <div className={`rounded-md border px-3 py-2 min-w-0 ${highlight ? "border-emerald-300 bg-emerald-50" : "border-slate-200"}`}>
+      <div className={`text-[10px] font-semibold uppercase tracking-wide ${highlight ? "text-emerald-700" : "text-ink-500"} truncate`} title={label}>
+        {label}
+      </div>
+      <div className={`mt-0.5 text-[17px] font-bold tabular-nums leading-tight ${tone}`}>{value}</div>
+    </div>
+  );
+}
+
 function criterionValue(v: Record<string, unknown>): string {
   if (v.make_model) return String(v.make_model);
   if (v.feature_code) return `${v.feature_code}${v.feature_description ? ` (${v.feature_description})` : ""}`;
@@ -692,12 +689,124 @@ function criterionValue(v: Record<string, unknown>): string {
   return JSON.stringify(v);
 }
 
-function VehicleRow({ a }: { a: FleetAssessmentSummary["assessments"][number] }) {
-  const [open, setOpen] = useState(false);
+// ---------------------------------------------------------------------------
+// Fleet assessment table: search, classification filter, sortable columns,
+// row-click detail expansion (no hidden "+N more" fragments).
+// ---------------------------------------------------------------------------
+
+type SortKey = "asset_id" | "model_year" | "build_date" | "classification";
+
+function VehicleAssessmentTable({
+  assessments,
+}: {
+  assessments: FleetAssessmentSummary["assessments"];
+}) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"ALL" | Classification>("ALL");
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortAsc, setSortAsc] = useState(true);
+  const [openId, setOpenId] = useState<number | null>(null);
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { ALL: assessments.length };
+    for (const a of assessments) c[a.classification] = (c[a.classification] ?? 0) + 1;
+    return c;
+  }, [assessments]);
+
+  const rows = useMemo(() => {
+    let out = assessments.filter((a) => {
+      if (filter !== "ALL" && a.classification !== filter) return false;
+      if (!query.trim()) return true;
+      const hay = `${a.vehicle?.asset_id ?? a.vehicle_id} ${a.vehicle?.make ?? ""} ${a.vehicle?.model ?? ""} ${a.reasons.join(" ")}`.toLowerCase();
+      return hay.includes(query.trim().toLowerCase());
+    });
+    if (sortKey) {
+      out = [...out].sort((x, y) => {
+        const vx = x.vehicle, vy = y.vehicle;
+        let cmp = 0;
+        if (sortKey === "asset_id") cmp = String(vx?.asset_id ?? "").localeCompare(String(vy?.asset_id ?? ""));
+        else if (sortKey === "model_year") cmp = (vx?.model_year ?? 0) - (vy?.model_year ?? 0);
+        else if (sortKey === "build_date") cmp = String(vx?.build_date ?? "").localeCompare(String(vy?.build_date ?? ""));
+        else if (sortKey === "classification") cmp = rank(x.classification) - rank(y.classification);
+        return sortAsc ? cmp : -cmp;
+      });
+    }
+    return out;
+  }, [assessments, filter, query, sortKey, sortAsc]);
+
+  function th(label: string, key?: SortKey, extraClass = "") {
+    const active = key && sortKey === key;
+    return (
+      <th className={`table-th ${key ? "cursor-pointer select-none hover:text-ink-900" : ""} ${extraClass}`}
+          onClick={key ? () => { if (active) setSortAsc(!sortAsc); else { setSortKey(key); setSortAsc(true); } } : undefined}>
+        {label}
+        {active && <span className="ml-1 text-[9px]">{sortAsc ? "▲" : "▼"}</span>}
+      </th>
+    );
+  }
+
+  return (
+    <div className="mt-4 space-y-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          className="input h-8 w-56 text-[12.5px]"
+          placeholder="Search asset, make, reason…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        {(["ALL", "CAMPAIGN_CRITERIA_MATCH", "VERIFICATION_REQUIRED", "OUTSIDE_REPORT_VERSION"] as const).map((f) => (
+          <button
+            key={f}
+            onClick={() => setFilter(f)}
+            className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+              filter === f ? "border-indigo-500 bg-indigo-600 text-white" : "border-slate-300 bg-white text-ink-600 hover:border-slate-400"
+            }`}
+          >
+            {f === "ALL" ? "All" : f.replaceAll("_", " ")} ({counts[f] ?? 0})
+          </button>
+        ))}
+        <span className="ml-auto text-[11px] text-ink-400">Click a row for the full deterministic explanation.</span>
+      </div>
+      <div className="overflow-x-auto rounded-lg border border-slate-200">
+        <table className="w-full text-[12.5px]">
+          <thead>
+            <tr>
+              {th("Asset ID", "asset_id")}
+              {th("MY", "model_year")}
+              {th("Production date", "build_date")}
+              {th("Brake config")}
+              {th("Classification", "classification")}
+              {th("Deterministic explanation")}
+              {th("VIN evidence")}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr><td colSpan={7} className="table-td text-center text-ink-400">No vehicles match the current filter.</td></tr>
+            )}
+            {rows.map((a) => (
+              <VehicleRow key={a.id} a={a} open={openId === a.id} onToggle={() => setOpenId(openId === a.id ? null : a.id)} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function VehicleRow({
+  a,
+  open,
+  onToggle,
+}: {
+  a: FleetAssessmentSummary["assessments"][number];
+  open: boolean;
+  onToggle: () => void;
+}) {
   const v = a.vehicle;
   return (
     <>
-      <tr className="hover:bg-slate-50/60 cursor-pointer" onClick={() => setOpen(!open)}>
+      <tr className={`cursor-pointer ${open ? "bg-indigo-50/50" : "hover:bg-slate-50/60"}`} onClick={onToggle}>
         <td className="table-td font-mono text-[11.5px] whitespace-nowrap">
           {v?.asset_id ?? a.vehicle_id}
           <span className="block font-sans text-[10.5px] text-ink-400">{v?.role === "SPARE" ? "spare" : `${v?.depot} depot`}</span>
@@ -709,11 +818,11 @@ function VehicleRow({ a }: { a: FleetAssessmentSummary["assessments"][number] })
         </td>
         <td className="table-td"><ClassificationBadge c={a.classification} /></td>
         <td className="table-td max-w-[380px] text-[12px] text-ink-600">
-          {a.reasons[0]}
+          <span className="line-clamp-2">{a.reasons[0]}</span>
           {a.reasons.length > 1 && (
-            <button className="ml-1 text-indigo-600 font-semibold hover:underline" onClick={(e) => { e.stopPropagation(); setOpen(!open); }}>
-              {open ? "less" : `+${a.reasons.length - 1} more`}
-            </button>
+            <span className="ml-1.5 inline-flex items-center rounded-full bg-slate-100 border border-slate-200 px-1.5 py-px text-[10px] font-bold text-ink-500">
+              +{a.reasons.length - 1}
+            </span>
           )}
         </td>
         <td className="table-td whitespace-nowrap">

@@ -257,3 +257,92 @@ export interface VinDecodeResult {
   cached: boolean;
   limitations: string;
 }
+
+// ---------------------------------------------------------------------------
+// Incident Response Agent (bounded, read-only investigation)
+// ---------------------------------------------------------------------------
+
+export interface InvestigationStep {
+  id: number;
+  seq: number;
+  kind: "MODEL_MESSAGE" | "TOOL_CALL" | "VALIDATION" | "FINAL" | "ERROR";
+  tool_name: string;
+  tool_args: Record<string, unknown> | null;
+  status: string;
+  explanation: string;
+  result: Record<string, unknown> | null;
+  duration_ms: number;
+  created_at: string;
+}
+
+export interface Investigation {
+  id: number;
+  session_uid: string;
+  incident_id: number;
+  objective: string;
+  requested_by: string;
+  status: "INVESTIGATING" | "COMPLETED" | "FAILED";
+  stop_reason: string;
+  model: string;
+  iterations_used: number;
+  tool_calls_count: number;
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  provider_error: string;
+  final_result: AgentFinalResult | null;
+  grounding_violations: string[];
+  steps: InvestigationStep[];
+}
+
+export interface AgentFinalResult {
+  incident_summary: string;
+  objective_interpretation: string;
+  facts: Array<{ statement: string; evidence_refs: string[] }>;
+  inferences: Array<{ statement: string; basis: string }>;
+  vehicle_classifications: Array<{
+    asset_id: string;
+    classification: Classification;
+    basis_ref: string;
+  }>;
+  affected_routes: string[];
+  recovery_candidates: Array<{
+    route_id: string;
+    spare_asset_id: string | null;
+    feasibility_note: string;
+  }>;
+  unresolved_constraints: string[];
+  unknowns_and_missing_evidence: string[];
+  proposed_next_actions: Array<{
+    action: string;
+    rationale: string;
+    requires_human_approval: boolean;
+  }>;
+  uncertainty_notes: string;
+  evidence_references: Array<{
+    ref_id: string;
+    description: string;
+    source: string;
+  }>;
+  human_approval_required: boolean;
+}
+
+export interface AgentStatus {
+  configured: boolean;
+  model: string;
+  base_url_host: string;
+  max_iterations: number;
+  tools: string[];
+  write_tools_exposed: false;
+  note: string;
+}
+
+export interface AgentProbe {
+  configured: boolean;
+  tool_calling_supported: boolean | null;
+  model: string;
+  detail: string;
+  duration_ms: number;
+}
