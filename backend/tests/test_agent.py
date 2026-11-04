@@ -593,6 +593,241 @@ def test_timed_out_tool_is_isolated_and_cannot_poison_later_writes(db, monkeypat
     assert "rogue_exc" not in seen and seen.get("rogue_read_ok") is True
 
 
+# ---------------------------------------------------------------------------
+# Grounding resolution + schema-aware recovery (regression tests)
+# ---------------------------------------------------------------------------
+
+
+def _canonical_index(db, incident) -> agent_svc.RefIndex:
+    """RefIndex built exactly as the runner builds it: from real tool outputs."""
+    index = agent_svc.RefIndex()
+    index.observe("get_recall_evidence", agent_tools.tool_get_recall_evidence(
+        db, agent_tools.IncidentArgs(incident_id=incident.id)))
+    index.observe("get_fleet_assessment", agent_tools.tool_get_fleet_assessment(
+        db, agent_tools.IncidentArgs(incident_id=incident.id)))
+    index.observe("preview_route_impact", agent_tools.tool_preview_route_impact(
+        db, agent_tools.RouteImpactArgs(
+            incident_id=incident.id, policy="HOLD_PENDING_VERIFICATION")))
+    return index
+
+
+def test_invented_evidence_references_rejected(db):
+    """Refs that were never returned by a tool are rejected - in facts, in the
+    evidence_references bibliography AND as a classification basis_ref."""
+    incident = first_incident(db)
+    assess = agent_tools.tool_get_fleet_assessment(
+        db, agent_tools.IncidentArgs(incident_id=incident.id))
+    v0 = assess["vehicles"][0]
+    payload = grounded_final_payload(db, incident)
+    payload["facts"][0]["evidence_refs"] = ["DOC-deadbeefdeadbeef", "CRIT-424242"]
+    payload["evidence_references"] = [
+        {"ref_id": "CRIT-424242", "description": "invented", "source": ""},
+        {"ref_id": "ASSESS-424242", "description": "invented", "source": ""},
+    ]
+    payload["vehicle_classifications"] = [
+        {"asset_id": v0["asset_id"], "classification": v0["classification"],
+         "basis_ref": "ASSESS-424242"},
+    ]
+    script = [
+        {"tool": "get_recall_evidence", "args": {"incident_id": incident.id}},
+        {"tool": "get_fleet_assessment", "args": {"incident_id": incident.id}},
+        {"tool": "preview_route_impact",
+         "args": {"incident_id": incident.id, "policy": "HOLD_PENDING_VERIFICATION"}},
+        {"final": payload},
+        {"final": payload},
+    ]
+    session = agent_svc.run_investigation(
+        db, incident_id=incident.id, objective="Test invented refs.",
+        requested_by="fleet.manager", provider=agent_svc.StubChatProvider(script),
+    )
+    assert session.status == "FAILED"
+    assert session.stop_reason == "GROUNDING_VALIDATION_FAILED"
+    assert session.final_result is None  # invented evidence never becomes fact
+    violations = session.grounding_violations
+    assert any("DOC-deadbeefdeadbeef" in v for v in violations)
+    assert any("CRIT-424242" in v for v in violations)
+    assert any("basis_ref 'ASSESS-424242'" in v for v in violations)
+    # Observability: every failed attempt persisted with retry metadata.
+    steps = [s for s in session.steps if s.kind == "VALIDATION"]
+    assert len(steps) == 2
+    assert [s.result["attempt"] for s in steps] == [1, 2]
+    assert all(s.result["max_retries"] == agent_svc.MAX_FINAL_RETRIES for s in steps)
+    assert all(isinstance(s.result["model_round"], int) for s in steps)
+    assert all(s.duration_ms >= 0 for s in steps)
+
+
+def test_canonical_evidence_references_accepted(db):
+    """Every cited ref resolves against canonical ids returned by real tool
+    outputs -> accepted."""
+    incident = first_incident(db)
+    session = agent_svc.run_investigation(
+        db, incident_id=incident.id, objective="Assess recall exposure.",
+        requested_by="fleet.manager",
+        provider=agent_svc.StubChatProvider(_happy_script(db, incident)),
+    )
+    assert session.status == "COMPLETED"
+    assert session.stop_reason == "MODEL_STOPPED"
+    index = _canonical_index(db, incident)
+    cited = [r["ref_id"] for r in session.final_result["evidence_references"]]
+    assert cited and all(r in index.refs for r in cited)
+    for fact in session.final_result["facts"]:
+        assert fact["evidence_refs"]
+        assert all(r in index.refs for r in fact["evidence_refs"])
+
+
+def test_oversized_objective_interpretation_truncated_and_recorded(db):
+    """An oversized free-text field is deterministically truncated to the
+    schema max_length, recorded, then accepted by full validation."""
+    incident = first_incident(db)
+    payload = grounded_final_payload(db, incident)
+    payload["objective_interpretation"] = "Ramble " * 300  # 2100 chars > 1000
+    script = [
+        {"tool": "get_recall_evidence", "args": {"incident_id": incident.id}},
+        {"tool": "get_fleet_assessment", "args": {"incident_id": incident.id}},
+        {"tool": "preview_route_impact",
+         "args": {"incident_id": incident.id, "policy": "HOLD_PENDING_VERIFICATION"}},
+        {"final": payload},
+    ]
+    session = agent_svc.run_investigation(
+        db, incident_id=incident.id, objective="Test oversized field.",
+        requested_by="fleet.manager", provider=agent_svc.StubChatProvider(script),
+    )
+    assert session.status == "COMPLETED"
+    assert len(session.final_result["objective_interpretation"]) == 1000
+    repair_steps = [
+        s for s in session.steps if s.kind == "VALIDATION" and s.status == "SCHEMA_REPAIR"
+    ]
+    assert len(repair_steps) == 1
+    assert any(
+        "objective_interpretation truncated from 2100 to 1000" in r
+        for r in repair_steps[0].result["repairs"]
+    )
+    assert repair_steps[0].result["model_round"] == 4
+    assert repair_steps[0].duration_ms >= 0
+    final_step = next(s for s in session.steps if s.kind == "FINAL")
+    assert "1 deterministic repair" in final_step.explanation
+
+
+def test_unexpected_json_schema_fields_dropped_and_recorded(db):
+    """$defs-style JSON-Schema echo fields are dropped deterministically and
+    the drop is recorded; the assessment is then validated normally."""
+    incident = first_incident(db)
+    payload = grounded_final_payload(db, incident)
+    payload["$defs"] = {"AgentFact": {"type": "object"}}
+    payload["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+    script = [
+        {"tool": "get_recall_evidence", "args": {"incident_id": incident.id}},
+        {"tool": "get_fleet_assessment", "args": {"incident_id": incident.id}},
+        {"tool": "preview_route_impact",
+         "args": {"incident_id": incident.id, "policy": "HOLD_PENDING_VERIFICATION"}},
+        {"final": payload},
+    ]
+    session = agent_svc.run_investigation(
+        db, incident_id=incident.id, objective="Test schema echo fields.",
+        requested_by="fleet.manager", provider=agent_svc.StubChatProvider(script),
+    )
+    assert session.status == "COMPLETED"
+    assert "$defs" not in session.final_result
+    assert "$schema" not in session.final_result
+    repair_steps = [
+        s for s in session.steps if s.kind == "VALIDATION" and s.status == "SCHEMA_REPAIR"
+    ]
+    assert len(repair_steps) == 1
+    repairs = repair_steps[0].result["repairs"]
+    assert any("dropped non-assessment field '$defs'" in r for r in repairs)
+    assert any("dropped non-assessment field '$schema'" in r for r in repairs)
+
+
+def test_multiple_simultaneous_validation_errors_reported(db):
+    """One rejection message lists EVERY schema error with its field path and
+    the fix; repairs already applied are noted too."""
+    incident = first_incident(db)
+    bad = grounded_final_payload(db, incident)
+    bad["objective_interpretation"] = "x" * 1500  # oversized -> repaired
+    bad["confidence"] = "high"                    # unexpected field
+    bad["facts"] = [{"statement": "", "evidence_refs": []}]  # too-short statement
+    script = [
+        {"tool": "get_recall_evidence", "args": {"incident_id": incident.id}},
+        {"final": bad},
+        {"final": bad},
+    ]
+    session = agent_svc.run_investigation(
+        db, incident_id=incident.id, objective="Test multi-error report.",
+        requested_by="fleet.manager", provider=agent_svc.StubChatProvider(script),
+    )
+    assert session.status == "FAILED"
+    assert session.stop_reason == "INVALID_FINAL_OUTPUT"
+    steps = [
+        s for s in session.steps
+        if s.kind == "VALIDATION" and s.status == agent_svc.STOP_INVALID_FINAL
+    ]
+    assert len(steps) == 2
+    first = steps[0]
+    assert "confidence: unexpected field" in first.explanation
+    assert "facts.0.statement" in first.explanation
+    assert "at least 1 character" in first.explanation
+    assert "objective_interpretation truncated from 1500 to 1000" in first.explanation
+    assert first.result["attempt"] == 1
+    assert first.result["max_retries"] == agent_svc.MAX_FINAL_RETRIES
+    assert first.result["repairs"]
+    assert session.final_result is None
+
+
+def test_retry_budget_exhaustion_is_recorded(db):
+    """After MAX_FINAL_RETRIES rejected attempts the investigation fails
+    honestly - validation is never bypassed to accept a failed response."""
+    incident = first_incident(db)
+    bad = grounded_final_payload(db, incident)
+    bad["confidence"] = "high"  # unrepairable unexpected field
+    script = [
+        {"tool": "get_recall_evidence", "args": {"incident_id": incident.id}},
+        {"final": bad},
+        {"final": bad},
+    ]
+    session = agent_svc.run_investigation(
+        db, incident_id=incident.id, objective="Test retry budget.",
+        requested_by="fleet.manager", provider=agent_svc.StubChatProvider(script),
+    )
+    assert session.status == "FAILED"
+    assert session.stop_reason == "INVALID_FINAL_OUTPUT"
+    assert session.final_result is None
+    assert session.iterations_used == 3  # 1 tool round + 2 rejected final rounds
+    steps = [s for s in session.steps if s.kind == "VALIDATION"]
+    assert [s.result["attempt"] for s in steps] == [1, 2]
+    assert [s.result["model_round"] for s in steps] == [2, 3]
+    assert session.tool_calls_count == 1
+
+
+def test_valid_corrected_assessment_accepted_after_schema_rejection(db):
+    """A schema-rejected draft followed by a corrected final is accepted -
+    the correction loop works end to end."""
+    incident = first_incident(db)
+    bad = grounded_final_payload(db, incident)
+    bad["confidence"] = "high"
+    good = grounded_final_payload(db, incident)
+    script = [
+        {"tool": "get_recall_evidence", "args": {"incident_id": incident.id}},
+        {"tool": "get_fleet_assessment", "args": {"incident_id": incident.id}},
+        {"tool": "preview_route_impact",
+         "args": {"incident_id": incident.id, "policy": "HOLD_PENDING_VERIFICATION"}},
+        {"final": bad},
+        {"final": good},
+    ]
+    session = agent_svc.run_investigation(
+        db, incident_id=incident.id, objective="Test correction after rejection.",
+        requested_by="fleet.manager", provider=agent_svc.StubChatProvider(script),
+    )
+    assert session.status == "COMPLETED"
+    assert session.stop_reason == "MODEL_STOPPED"
+    rejected = [s for s in session.steps if s.kind == "VALIDATION"
+                and s.status == agent_svc.STOP_INVALID_FINAL]
+    assert len(rejected) == 1 and rejected[0].result["attempt"] == 1
+    final_step = next(s for s in session.steps if s.kind == "FINAL")
+    assert final_step.status == "OK"
+    assert session.final_result is not None
+    assert session.final_result["incident_summary"] == good["incident_summary"]
+
+
 def test_tool_execution_error_surfaced_not_crashing(db):
     incident = first_incident(db)
     script = [
