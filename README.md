@@ -1,202 +1,551 @@
 # RouteShield
 
-**Evidence-driven recall response and operational recovery for school-bus fleet operators.**
+### Evidence-Grounded AI Investigation for Safer Fleet Operations
 
-Built for the **Vultr Agent Rush Hackathon 2026 — Track 2: Powering the Future of Work.**
+**RouteShield** is an AI-powered fleet safety investigation and operational decision-support system that helps fleet managers investigate vehicle recalls, assess fleet-wide exposure, evaluate route disruption, and identify feasible recovery options — all while keeping safety-critical decisions deterministic and under human control.
 
-> ### Core product principle
-> **Absence of evidence is not evidence of safety.**
-> A model-year or model match is never presented as proof that an individual vehicle has an
-> open recall. The system abstains (`VERIFICATION_REQUIRED`) whenever critical evidence is
-> missing, and it never makes autonomous safety decisions — a human fleet manager explicitly
-> selects the operational policy and explicitly approves every operational change.
+Built for the **Vultr Agent Rush Hackathon 2026**.
 
----
-
-## What RouteShield does
-
-When a vehicle safety recall is announced, RouteShield:
-
-1. **Retrieves the real recall** from the official NHTSA campaign API
-   (`api.nhtsa.gov/recalls/campaignNumber`) and downloads the official **Part 573 report PDF**
-   (`static.nhtsa.gov/odi/rcl/...`).
-2. **Extracts applicability criteria** from the report with a deterministic PyMuPDF parser —
-   make/model, per-model-year production windows, the brake configuration **feature code**,
-   explicit exclusions — with **page numbers, verbatim snippets, extraction method, confidence
-   and review status** preserved for every field. An optional **Vultr Serverless Inference**
-   (OpenAI-compatible) LLM path produces *supplementary* extraction marked `NEEDS_REVIEW`.
-3. **Matches criteria against the fleet register** using deterministic Python only
-   (the LLM never classifies a vehicle).
-4. **Classifies every bus** as `CAMPAIGN_CRITERIA_MATCH`, `VERIFICATION_REQUIRED`, or
-   `OUTSIDE_REPORT_VERSION` — always with the exact human-readable reasons and per-criterion
-   evidence. VIN-level status is tracked separately and honestly
-   (`VIN_STATUS_UNAVAILABLE` for synthetic records — never faked).
-5. **Computes route impact** under the fleet manager's explicitly selected policy
-   (`HOLD_PENDING_VERIFICATION` or `MANAGER_REVIEW_ONLY`).
-6. **Proposes replacements** from the spare pool with capacity, depot and equipment
-   compatibility checks (deterministic greedy best-fit; infeasible routes report exactly why).
-7. **Requires explicit manager approval** — the only code path that may change operational
-   state, inside a single DB transaction, re-validating plan hash and spare availability.
-8. **Records everything** in an append-only audit log that no endpoint can modify or delete.
-
-### Security architecture (non-negotiable)
-
-```
-LLM (Vultr Serverless Inference)          Deterministic backend
-────────────────────────────────          ─────────────────────────────────────────
-reads report text                         validates schemas
-extracts structured JSON                  checks campaign criteria (assessment.py)
-output marked NEEDS_REVIEW                calculates route impact (recovery.py)
-NO database access                        enforces authorization (auth.py)
-NO tool access                            applies approved changes (approval.py)
-NO vehicle classification                 writes append-only audit (audit.py)
-NO operational writes                     ONLY POST /api/incidents/{id}/approve-plan
-                                          may modify operational state
-```
-
-### Demo data
-
-All fleet records are synthetic and labelled
-**“SYNTHETIC DEMONSTRATION DATA — NOT REAL VEHICLES”**.
-Synthetic identifiers (e.g. `SYNTHETIC-BUS-001`) are **never** submitted to NHTSA or vPIC —
-enforced in code and covered by tests. The demonstration recall campaign (**26V111**,
-International Motors IC Bus CESB brake lines) is **real** and retrieved from official sources.
+[![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/React-Frontend-61DAFB?logo=react)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-Frontend-3178C6?logo=typescript)](https://www.typescriptlang.org/)
+[![Docker](https://img.shields.io/badge/Docker-Deployment-2496ED?logo=docker)](https://www.docker.com/)
+[![Vultr](https://img.shields.io/badge/Inference-Vultr-007BFC)](https://www.vultr.com/)
 
 ---
 
-## Repository layout
+## The Problem
 
-```
-backend/                 FastAPI application
-  app/
-    main.py              app factory, startup seeding, optional background live refresh
-    config.py            env-driven settings (pydantic-settings; no hardcoded secrets)
-    db.py                SQLAlchemy engine/session (SQLite default, PostgreSQL-compatible)
-    models.py            full data model (campaigns, report versions, criteria, fleet,
-                         incidents, assessments, policies, proposals, approvals, audit,
-                         benchmark runs, VIN decode cache)
-    schemas.py           Pydantic API schemas + strict LLM extraction schema
-    auth.py              manager account, PBKDF2 hashing, HMAC-signed tokens
-    seed.py              idempotent synthetic fleet/route/incident seeding
-    services/
-      nhtsa.py           official campaign API + report download (cached by SHA-256)
-      pdf_extraction.py  deterministic Part 573 parser (PyMuPDF), validation, provenance
-      llm_extraction.py  Vultr Serverless Inference client (strict JSON, fallback-safe)
-      evidence.py        live pipeline, hash-pinned review inheritance, fixture fallback,
-                         changed-document → PENDING_REVIEW versioning
-      assessment.py      deterministic classification engine (pure core + DB wrapper)
-      recovery.py        route impact + spare allocation (deterministic greedy best-fit)
-      approval.py        THE ONLY operational-write path (transactional, re-validating)
-      audit.py           append-only audit log (no update/delete anywhere)
-      vpic_service.py    single human-triggered VIN decode/recall-check, cached, throttled
-    benchmark/           ground-truth cases + metric runner (nothing hardcoded)
-    data/campaigns/26V111.reviewed.json   manually reviewed fallback fixture (hash-pinned)
-  tests/                 114 automated tests (pytest), incl. the real report PDF fixture
-frontend/                React + TypeScript + Vite + Tailwind CSS
-  src/views/             Incident Command · Fleet · Route Recovery · Evidence & Audit
-scripts/run_benchmark.py reproducible benchmark CLI
-docker-compose.yml       single-VM deployment (nginx proxy + healthchecks + volume)
-backend/Dockerfile       non-root, healthchecked
-frontend/Dockerfile      multi-stage build → nginx with /api reverse proxy
-.env.example             every supported environment variable
-DEPLOYMENT.md            exact Vultr deployment commands
-```
+Vehicle recalls create more than a maintenance problem. For fleet operators, a single recall can affect multiple vehicles, scheduled routes, spare capacity, depot assignments, and service continuity.
 
----
+Fleet managers need to answer several questions:
 
-## Run locally (fresh checkout)
+- Which vehicles match the recall's applicability criteria?
+- Which vehicles require additional verification?
+- Which vehicles fall outside the specific report's applicability criteria?
+- How would different operational policies affect scheduled routes?
+- Are there enough compatible spare vehicles?
+- Which replacement assignments create resource contention?
+- What evidence supports each recommendation?
 
-Requirements: Python 3.11+, Node 20+.
+These questions often require information scattered across recall documents, fleet registers, maintenance records, and operational systems.
 
-```bash
-# 1. Backend
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r backend/requirements.txt
-cp .env.example .env            # then set ROUTESHIELD_MANAGER_PASSWORD (and optionally
-                                # ROUTESHIELD_AUTH_SECRET, VULTR_INFERENCE_*)
-cd backend && uvicorn app.main:app --host 0.0.0.0 --port 8000 &
-cd ..
+RouteShield brings this information into a single evidence-grounded investigation workflow.
 
-# 2. Frontend (proxies /api to the backend)
-cd frontend && npm install && npm run dev
-# open http://localhost:5173
-```
+## Our Solution
 
-Manager login: username/password from `ROUTESHIELD_MANAGER_USERNAME` /
-`ROUTESHIELD_MANAGER_PASSWORD`. If the password env var is unset, a random one is generated
-and printed **once** in the backend log (never hardcoded).
+RouteShield combines a deterministic safety assessment engine with a bounded AI investigation agent.
 
-First startup seeds the database idempotently: 15 synthetic vehicles, 6 routes, the 26V111
-incident backed by the reviewed fixture, and an initial deterministic assessment. A background
-thread then attempts the **live** NHTSA refresh; on success the UI banner switches from
-“Using manually reviewed campaign evidence.” to “Live evidence”. Re-running the seed never
-duplicates incidents, vehicles or routes.
+The deterministic backend evaluates recall applicability and calculates operational impact. The AI agent orchestrates read-only tools, investigates the returned evidence, compares scenarios, and prepares a structured briefing for the fleet manager.
 
-### Tests & benchmark
+**The AI investigates. The deterministic engine decides classifications. The human manager authorizes operational changes.**
 
-```bash
-cd backend && python -m pytest tests/ -q     # 114 tests, fully offline (fixtures + mocks)
-python scripts/run_benchmark.py --verify-determinism
-```
+### Core Capabilities
 
----
-
-## Environment variables
-
-See `.env.example` for the authoritative list. Highlights:
-
-| Variable | Purpose |
+| Capability | Description |
 |---|---|
-| `DATABASE_URL` | SQLite default; any SQLAlchemy URL (PostgreSQL works unchanged) |
-| `ROUTESHIELD_MANAGER_USERNAME/PASSWORD` | Manager account (random password if unset) |
-| `ROUTESHIELD_AUTH_SECRET` | HMAC token signing — **required in production** |
-| `VULTR_INFERENCE_API_KEY / _BASE_URL / _MODEL` | Optional LLM-assisted extraction (never required) |
-| `AUTO_REFRESH_RECALL` | Background live NHTSA refresh at startup (default `true`) |
-| `ALLOW_OFFLINE_FALLBACK` | Permit the reviewed fixture when live retrieval fails (default `true`) |
-| `VPIC_MIN_REQUEST_INTERVAL_SECONDS` | Outbound vPIC throttle (default 2s) |
-
-Secrets are read from the environment only — nothing is baked into images or source.
-
----
-
-## API overview (full docs at `/docs` — OpenAPI)
-
-```
-GET  /api/health
-POST /api/auth/login
-GET  /api/incidents                                  GET /api/incidents/{id}
-POST /api/incidents/{id}/refresh-recall              GET /api/incidents/{id}/evidence
-POST /api/incidents/{id}/assess-fleet                GET /api/incidents/{id}/fleet-assessment
-POST /api/incidents/{id}/set-operational-policy      (manager)
-POST /api/incidents/{id}/generate-recovery-plan      (manager)
-GET  /api/incidents/{id}/recovery-plan
-POST /api/incidents/{id}/approve-plan                (manager — ONLY operational write path)
-GET  /api/incidents/{id}/audit
-GET  /api/fleet/vehicles                             GET /api/fleet/routes
-GET  /api/benchmarks/latest                          POST /api/benchmarks/run
-POST /api/vpic/decode-single-vin                     (manager, one VIN, audited)
-POST /api/vpic/recall-check-single-vin               (manager, one VIN, audited)
-```
+| Live Recall Retrieval | Retrieves recall campaign information from the official NHTSA API and its Part 573 report. |
+| Evidence Extraction | Extracts applicability criteria, production windows, feature codes, exclusions, and document provenance. |
+| Deterministic Fleet Assessment | Evaluates fleet records against reviewed recall criteria without relying on LLM classification. |
+| Vehicle Classification | Identifies campaign criteria matches, vehicles requiring verification, and vehicles outside the report version. |
+| Route Impact Analysis | Compares operational consequences under different fleet policies. |
+| Spare Vehicle Matching | Evaluates replacement capacity, depot compatibility, and required equipment. |
+| Resource Contention Detection | Identifies when multiple routes depend on the same available spare. |
+| AI Investigation Agent | Uses bounded, read-only tools to investigate the fleet and generate a grounded assessment. |
+| Human Approval Workflow | Requires explicit manager authorization before operational changes. |
+| Audit Trail | Preserves an append-only record of operational decisions and actions. |
 
 ---
 
-## Deployment
+## Core Safety Principles
 
-Single Vultr Cloud Compute VM via Docker Compose — see **[DEPLOYMENT.md](DEPLOYMENT.md)** for
-exact commands. Short version:
+RouteShield is designed around a strict separation between AI reasoning and operational authority.
+
+### 1. Absence of evidence is not evidence of safety
+
+A vehicle is never declared safe merely because the system cannot establish recall applicability.
+
+When critical evidence is missing or conflicting, the deterministic assessment engine abstains and classifies the vehicle as `VERIFICATION_REQUIRED`.
+
+### 2. Deterministic classifications
+
+The LLM does not classify vehicles.
+
+Vehicle classifications are produced by the deterministic assessment engine using the reviewed applicability criteria and available fleet records.
+
+### 3. Read-only AI investigation
+
+The investigation agent can retrieve information, inspect fleet records, examine evidence, and preview route impact.
+
+It cannot independently change vehicle assignments, place operational holds, approve recovery plans, or modify fleet state.
+
+### 4. Explicit manager approval
+
+Operational changes require authorization through the manager approval workflow.
+
+The approval path revalidates the proposed plan and spare availability before applying changes.
+
+### 5. Evidence-grounded responses
+
+The agent's final assessment must pass schema and grounding validation against persisted tool outputs.
+
+Evidence references, vehicle identifiers, and route identifiers are treated as distinct identifier types. Unsupported references are rejected rather than silently accepted.
+
+---
+
+## System Architecture
+
+RouteShield consists of five major layers:
+
+1. Recall and evidence ingestion
+2. Deterministic fleet assessment
+3. AI investigation and tool orchestration
+4. Route recovery and resource analysis
+5. Human approval and audit
+
+### High-Level Architecture
+
+```mermaid
+flowchart TD
+    A[Official NHTSA Recall API] --> B[Part 573 Report PDF]
+    B --> C[Evidence Extraction and Review]
+    C --> D[Deterministic Assessment Engine]
+
+    E[Fleet Register] --> D
+    D --> F[Vehicle Classifications]
+    F --> G[Route Impact and Recovery Engine]
+
+    H[Vultr Serverless Inference] --> I[Bounded AI Investigation Agent]
+    J[Agent Console] --> I
+
+    I --> K[Read-only Investigation Tools]
+    K --> D
+    K --> G
+    K --> L[Evidence and Audit Data]
+
+    I --> M[Structured Assessment]
+    M --> N[Schema Validation]
+    N --> O[Grounding Validation]
+    O --> P[Manager-ready Briefing]
+
+    G --> Q[Recovery Proposal]
+    Q --> R[Explicit Manager Approval]
+    R --> S[Operational State Update]
+    S --> T[Append-only Audit Trail]
+```
+
+### AI Investigation Architecture
+
+The bounded investigation agent uses Vultr Serverless Inference to reason over information returned by dedicated backend tools.
+
+The agent does not receive unrestricted database access.
+
+Its available tools are read-only:
+
+| Tool | Purpose |
+|---|---|
+| `get_recall_evidence` | Retrieves reviewed recall evidence and applicability criteria. |
+| `get_fleet_assessment` | Retrieves deterministic fleet classifications. |
+| `preview_route_impact` | Simulates route disruption under a selected policy. |
+| `get_available_spares` | Retrieves available spare vehicles and eligibility information. |
+| `get_open_verification_items` | Retrieves unresolved vehicle verification work. |
+| `get_audit_trail` | Retrieves the incident's audit history. |
+| `get_vehicle_detail` | Retrieves details for an individual fleet vehicle. |
+
+The agent operates with bounded investigation rounds and validates its final structured assessment before presenting it.
+
+### Grounding and Validation Pipeline
+
+```mermaid
+flowchart TD
+    A[Investigation Objective] --> B[Bounded Agent]
+    B --> C[Read-only Tool Calls]
+    C --> D[Persisted Tool Results]
+    D --> E[Evidence Reference Index]
+    E --> F[Structured Final Assessment]
+    F --> G[Schema Validation]
+    G --> H[Grounding Validation]
+    H --> I[Grounded Briefing]
+    G -->|Invalid| J[Bounded Repair]
+    J --> G
+    H -->|Ungrounded| K[Reject Unsupported Output]
+```
+
+The final assessment is accepted only when its structure and references satisfy the validation requirements.
+
+---
+
+## Technology Stack
+
+### Backend
+
+- Python 3.11+
+- FastAPI
+- Pydantic
+- SQLAlchemy
+- PyMuPDF
+- Pytest
+
+### Frontend
+
+- React
+- TypeScript
+- Vite
+- Tailwind CSS
+
+### AI and Inference
+
+- Vultr Serverless Inference
+- Qwen inference model (`qwen3.8-flash-next`)
+- Bounded tool-calling agent
+- Structured output validation
+- Evidence grounding validation
+
+### Infrastructure
+
+- Vultr Cloud Compute
+- Docker
+- Docker Compose
+- Nginx
+- Cloudflare Tunnel for public demo access
+
+### External Data
+
+- NHTSA Recall Campaign API
+- Official NHTSA Part 573 recall reports
+
+---
+
+## Demonstration: NHTSA Recall Campaign 26V111
+
+RouteShield was tested against NHTSA campaign **26V111**, involving certain International Motors IC Bus CESB school buses and a potential hydraulic brake-line issue.
+
+The system retrieved the campaign information and its Part 573 report, extracted the applicability criteria, and evaluated a synthetic fleet of 15 vehicles.
+
+**Important:** The recall campaign is real, but the fleet records used in this demonstration are synthetic. They are not real vehicles, and the assessment is not a VIN-level recall confirmation.
+
+### Fleet Assessment Results
+
+| Classification | Vehicles |
+|---|---:|
+| `CAMPAIGN_CRITERIA_MATCH` | 3 |
+| `VERIFICATION_REQUIRED` | 4 |
+| `OUTSIDE_REPORT_VERSION` | 8 |
+| **Total** | **15** |
+
+### Route Policy Comparison
+
+RouteShield compared two operational policies using read-only route previews.
+
+| Metric | HOLD_PENDING_VERIFICATION | MANAGER_REVIEW_ONLY |
+|---|---:|---:|
+| Disrupted routes | 5 | 3 |
+| Unresolved constraints | 2 | 0 |
+| Routes flagged for review | 0 | 2 |
+
+The distinction matters:
+
+- `HOLD_PENDING_VERIFICATION` removes both criteria-matched and verification-required vehicles from the proposed dispatch allocation.
+- `MANAGER_REVIEW_ONLY` removes criteria-matched vehicles while retaining verification-required assignments for manager review.
+
+Retaining an assignment does not establish that the vehicle is safe.
+
+### Spare Vehicle Analysis
+
+The investigation identified three eligible spare vehicles.
+
+| Route | Proposed spare | Result |
+|---|---|---|
+| R-101 | SYNTHETIC-SPARE-01 | Feasible |
+| R-102 | SYNTHETIC-SPARE-02 | Feasible |
+| R-103 | SYNTHETIC-SPARE-02 | Feasible individually |
+| R-104 | None | No feasible spare under hold policy |
+| R-105 | None | No feasible spare under hold policy |
+
+The agent identified a critical resource contention issue:
+
+`SYNTHETIC-SPARE-02` is the only feasible replacement for both R-102 and R-103. It cannot serve both simultaneous routes.
+
+This is the kind of operational constraint that a simple recall lookup or chatbot would not identify.
+
+### Successful End-to-End Investigation
+
+The updated Agent v2 workflow successfully completed the fleet-wide investigation.
+
+| Metric | Result |
+|---|---|
+| Investigation trace | `INV-995660A3AAE1` |
+| Inference model | `vultr:qwen3.8-flash-next` |
+| Investigation rounds | 7 / 8 |
+| Tool calls | 9 |
+| Duration | 58.9 seconds |
+| Final schema validation | Accepted |
+| Grounding validation | Passed |
+| Operational actions executed | None |
+
+The final assessment was accepted after a deterministic schema repair.
+
+The agent produced a grounded briefing containing vehicle classifications, route impact comparisons, spare vehicle constraints, resource contention, evidence references, unknowns, and proposed manager decisions.
+
+---
+
+## Deployment Architecture
+
+RouteShield is deployed on a Vultr Cloud Compute virtual machine using Docker Compose.
+
+The application is separated into backend and frontend services, with a persistent database volume.
+
+Vultr Serverless Inference provides the inference capability used by the investigation agent.
+
+```mermaid
+flowchart TD
+    U[Browser / Fleet Manager] --> CF[HTTPS Demo Tunnel]
+    CF --> N[Nginx Frontend]
+    N --> API[FastAPI Backend]
+    API --> DB[(Persistent Database)]
+    API --> AI[Vultr Serverless Inference]
+    API --> EXT[NHTSA External Services]
+```
+
+### Deployment Components
+
+| Component | Responsibility |
+|---|---|
+| Vultr Cloud Compute | Hosts the application and Docker services. |
+| Docker Compose | Runs and manages application containers. |
+| Nginx | Serves the frontend and proxies API requests. |
+| FastAPI | Handles business logic, tools, assessments and approvals. |
+| Database | Persists fleet, incident, evidence, and audit information. |
+| Vultr Serverless Inference | Powers the bounded AI investigation agent. |
+| Cloudflare Tunnel | Provides HTTPS access to the demonstration frontend. |
+
+The public demonstration endpoint exposes the frontend only. Backend and database services are not intentionally exposed as public application ports.
+
+---
+
+## Getting Started
+
+### Requirements
+
+- Python 3.11+
+- Node.js 20+
+- npm
+- Git
+- Docker and Docker Compose (for containerized deployment)
+
+### 1. Clone the Repository
 
 ```bash
-git clone <repo> && cd routeshield
-cp .env.example .env   # set ROUTESHIELD_MANAGER_PASSWORD + ROUTESHIELD_AUTH_SECRET
-docker compose up -d --build
-# UI at http://<vm-ip>:8080 (put nginx/caddy + TLS in front for public use)
+git clone https://github.com/Anirudh2627/Route-Shield.git
+cd Route-Shield
 ```
 
-## Honest limitations
+### 2. Configure Environment Variables
 
-* NHTSA’s VIN-level recall lookup is protected against third-party automated access; the
-  single-VIN check reports “unavailable” honestly instead of ever fabricating a VIN-confirmed
-  status. vPIC decode (attributes only) is fully functional.
-* The LLM path requires `VULTR_INFERENCE_API_KEY`; without it everything still works via the
-  deterministic parser and the reviewed fixture.
-* Benchmark numbers describe **synthetic test cases**, not production fleet accuracy.
+```bash
+cp .env.example .env
+```
+
+Configure the required manager credentials and authentication secret.
+
+For a local setup, the LLM integration is optional. For AI-powered investigation, configure the Vultr Serverless Inference environment variables.
+
+Never commit `.env` or API keys to Git.
+
+### 3. Run the Backend
+
+```bash
+cd backend
+
+python -m venv .venv
+```
+
+Activate the environment.
+
+**Windows PowerShell:**
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+**Linux/macOS:**
+
+```bash
+source .venv/bin/activate
+```
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Start the backend:
+
+```bash
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+The backend API documentation is available at:
+
+`http://127.0.0.1:8000/docs`
+
+### 4. Run the Frontend
+
+Open another terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the local frontend URL printed by Vite.
+
+### 5. Run with Docker Compose
+
+From the repository root:
+
+```bash
+docker compose up -d --build
+```
+
+Inspect running services:
+
+```bash
+docker compose ps
+```
+
+Stop the local deployment:
+
+```bash
+docker compose down
+```
+
+For the Vultr deployment, consult `DEPLOYMENT.md` and configure production secrets before starting the services.
+
+---
+
+## Testing
+
+The backend includes automated tests covering assessment logic, agent orchestration, schema validation, grounding, and related safety behavior.
+
+Run the backend test suite:
+
+```bash
+cd backend
+python -m pytest -q
+```
+
+**Latest verified result for the Agent v2 P0 grounding-fix integration:**
+
+```text
+154 passed in 24.95s
+```
+
+The successful staging investigation also passed final schema and grounding validation.
+
+---
+
+## Repository Structure
+
+```text
+Route-Shield/
+│
+├── backend/
+│   ├── app/
+│   │   ├── main.py
+│   │   ├── config.py
+│   │   ├── db.py
+│   │   ├── models.py
+│   │   ├── schemas.py
+│   │   ├── auth.py
+│   │   ├── seed.py
+│   │   │
+│   │   ├── services/
+│   │   │   ├── agent.py
+│   │   │   ├── assessment.py
+│   │   │   ├── recovery.py
+│   │   │   ├── approval.py
+│   │   │   ├── audit.py
+│   │   │   ├── evidence.py
+│   │   │   ├── nhtsa.py
+│   │   │   ├── pdf_extraction.py
+│   │   │   └── llm_extraction.py
+│   │   │
+│   │   └── ...
+│   │
+│   ├── tests/
+│   ├── requirements.txt
+│   └── Dockerfile
+│
+├── frontend/
+│   ├── src/
+│   │   ├── views/
+│   │   └── ...
+│   ├── package.json
+│   └── Dockerfile
+│
+├── scripts/
+├── docker-compose.yml
+├── .env.example
+├── DEPLOYMENT.md
+└── README.md
+```
+
+---
+
+## Security and Limitations
+
+RouteShield is a decision-support system, not an autonomous vehicle safety authority.
+
+- Fleet classifications are deterministic and depend on the quality and completeness of the underlying fleet data.
+- `CAMPAIGN_CRITERIA_MATCH` means the reviewed campaign criteria match the available vehicle record. It is not VIN-level confirmation of an open recall.
+- `VERIFICATION_REQUIRED` means evidence is missing, conflicting, or insufficient.
+- `OUTSIDE_REPORT_VERSION` means the vehicle is outside the applicability criteria of the specific report version assessed. It does not establish that the vehicle is safe or unaffected by other recalls.
+- Synthetic demonstration records must never be treated as real fleet records.
+- VIN-level recall verification is not claimed when the information is unavailable.
+- The AI investigation agent has read-only tools and cannot independently execute operational actions.
+- Operational changes require explicit manager approval.
+- The public Cloudflare Quick Tunnel used for the demonstration is temporary and is not a production-grade permanent domain or uptime solution.
+
+---
+
+## Future Scope
+
+Potential future improvements include:
+
+- Integration with real fleet-management and maintenance systems.
+- More comprehensive VIN-level recall verification workflows.
+- Historical recall monitoring and automated evidence refresh.
+- Multi-depot optimization and richer vehicle scheduling constraints.
+- Additional recovery strategies for resource contention.
+- Long-term incident analytics and operational reporting.
+- Persistent, managed public deployment with a custom domain and access controls.
+
+---
+
+## Why RouteShield?
+
+RouteShield is built around one principle:
+
+> **AI should help people make better operational decisions — not silently make safety-critical decisions on their behalf.**
+
+By combining deterministic assessment, evidence-grounded AI investigation, route simulation, resource analysis, and explicit human approval, RouteShield turns fragmented recall information into an actionable operational briefing.
+
+**Investigate with evidence. Plan with constraints. Act with approval.**
+
+---
+
+## Links
+
+- **GitHub Repository:** https://github.com/Anirudh2627/Route-Shield
+- **Portfolio:** https://anirudhdv.vercel.app/
+- **Hackathon:** Vultr Agent Rush 2026
+- **Website LINK:** https://lights-talks-glasgow-valentine.trycloudflare.com/?
+
+
+---
+
+*Built with Python, FastAPI, React, TypeScript, Docker, and Vultr Serverless Inference.*
